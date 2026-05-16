@@ -1,7 +1,5 @@
-# Visual Studio cache/options directory
 .vs/
 
-# Build results
 x64/
 x86/
 Debug/
@@ -11,6 +9,7 @@ Release/
 *.ilk
 *.obj
 *.idb
+*.lib
+*.dll
 
-# BrainFlow automated build export folder (if you want to ignore it)
 brainflow_export/
