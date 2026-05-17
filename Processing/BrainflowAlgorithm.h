@@ -3,8 +3,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
-#include <thread>
-#include <chrono>
+#include <mutex>
 
 #include "board_shim.h"
 #include "data_filter.h"
@@ -15,20 +14,28 @@ public:
     BrainflowAlgorithm();
     ~BrainflowAlgorithm();
 
-    // Connection Controls
-    bool Connect(const std::string& port, const std::string& mac, const std::vector<int>& selected_eeg_channels);
+    // Core Board Commands
+    bool Connect(const std::string& port, const std::string& macAddress);
     void Disconnect();
+    bool IsConnected() const;
 
-    // Thread-safe variables for the ImGui Frontend to read
-    std::atomic<bool> isConnected{ false };
-    std::atomic<double> concentrationMeasure{ 0.0 };
-    std::atomic<int> boardId{ (int)BoardIds::GANGLION_BOARD };
-    int samplingRate = 200;
+    // The main processing loop (Gets data, filters, runs ML)
+    void ProcessData(const std::vector<int>& activeChannels);
+
+    // Thread-safe Getters for the UI
+    float GetConcentration();
+    std::vector<double> GetBandPowers();
 
 private:
     BoardShim* board;
-    std::vector<int> activeEegChannels;
+    MLModel* concentrationModel;
+    std::atomic<bool> connected;
 
-    // The background loop (Equivalent to your Python ConnectedTask)
-    void DataLoop();
+    int samplingRate;
+    int boardId;
+
+    // Thread-safety locks and shared data
+    std::mutex dataMutex;
+    float currentConcentration;
+    std::vector<double> currentBandPowers; // Delta, Theta, Alpha, Beta, Gamma
 };

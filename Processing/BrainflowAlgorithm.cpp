@@ -1,118 +1,150 @@
 #include "BrainflowAlgorithm.h"
 #include <iostream>
+#include <thread>
 
-BrainflowAlgorithm::BrainflowAlgorithm() {
-    board = nullptr;
+BrainflowAlgorithm::BrainflowAlgorithm() : board(nullptr), concentrationModel(nullptr), connected(false) {
+    currentConcentration = 0.0f;
+    currentBandPowers = { 0.0, 0.0, 0.0, 0.0, 0.0 };
 }
 
 BrainflowAlgorithm::~BrainflowAlgorithm() {
-    if (isConnected) {
-        Disconnect();
-    }
+    Disconnect();
 }
 
-bool BrainflowAlgorithm::Connect(const std::string& port, const std::string& mac, const std::vector<int>& selected_eeg_channels) {
-    if (isConnected) return true;
-
-    activeEegChannels = selected_eeg_channels;
-
-    BrainFlowInputParams params;
-    params.serial_port = port;
-    if (!mac.empty()) {
-        params.mac_address = mac;
-    }
-
-    board = new BoardShim(boardId, params);
+bool BrainflowAlgorithm::Connect(const std::string& port, const std::string& macAddress) {
+    if (connected) return true;
 
     try {
+        BoardShim::enable_dev_board_logger();
+        struct BrainFlowInputParams params;
+
+        // Convert std::string to char array for BrainFlow
+        if (!port.empty()) params.serial_port = port;
+        if (!macAddress.empty()) params.mac_address = macAddress;
+
+        boardId = (int)BoardIds::GANGLION_BOARD;
+        samplingRate = BoardShim::get_sampling_rate(boardId);
+
+        board = new BoardShim(boardId, params);
         board->prepare_session();
         board->start_stream();
-        isConnected = true;
 
-        // Start the background thread (Matches threading.Thread in Python)
-        std::thread(&BrainflowAlgorithm::DataLoop, this).detach();
+        // Initialize ML Model
+        struct BrainFlowModelParams modelParams((int)BrainFlowMetrics::MINDFULNESS, (int)BrainFlowClassifiers::DEFAULT_CLASSIFIER);
+        concentrationModel = new MLModel(modelParams);
+        concentrationModel->prepare();
+
+        connected = true;
+        std::cout << "[BrainFlow] Connected successfully to Ganglion.\n";
         return true;
     }
     catch (const BrainFlowException& err) {
-        std::cerr << "BrainFlow Error: " << err.what() << std::endl;
-        delete board;
-        board = nullptr;
+        std::cerr << "[BrainFlow Error] " << err.what() << std::endl;
+        Disconnect();
         return false;
     }
 }
 
 void BrainflowAlgorithm::Disconnect() {
-    isConnected = false; // This safely stops the DataLoop thread
-    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Give thread time to exit
-
     if (board != nullptr) {
         try {
-            board->stop_stream();
-            board->release_session();
+            if (board->is_prepared()) {
+                board->stop_stream();
+                board->release_session();
+            }
         }
-        catch (...) {} // Ignore cleanup errors
-
+        catch (...) {}
         delete board;
         board = nullptr;
     }
+
+    if (concentrationModel != nullptr) {
+        try { concentrationModel->release(); }
+        catch (...) {}
+        delete concentrationModel;
+        concentrationModel = nullptr;
+    }
+
+    connected = false;
+    std::cout << "[BrainFlow] Disconnected.\n";
 }
 
-void BrainflowAlgorithm::DataLoop() {
-    // ML Model Setup (Matches BrainFlowMetrics.MINDFULNESS)
-    BrainFlowModelParams ml_params((int)BrainFlowMetrics::MINDFULNESS, (int)BrainFlowClassifiers::DEFAULT_CLASSIFIER);
-    MLModel concentration_model(ml_params);
-    concentration_model.prepare();
+bool BrainflowAlgorithm::IsConnected() const {
+    return connected.load();
+}
 
-    while (isConnected) {
-        // 1. Wait until we have 300 samples
-        if (board->get_board_data_count() < 300) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            continue;
+void BrainflowAlgorithm::ProcessData(const std::vector<int>& activeChannels) {
+    if (!connected || board == nullptr || activeChannels.empty()) return;
+
+    try {
+        int numSamples = board->get_board_data_count();
+        if (numSamples < 300) return; // Wait until we have enough data
+
+        // 1. Modern API: Returns a BrainFlowArray directly (no dataCount needed)
+        BrainFlowArray<double, 2> data = board->get_current_board_data(numSamples);
+
+        // 2. Modern API: Returns a std::vector<int> directly (no dataCount needed)
+        std::vector<int> allEegChannels = BoardShim::get_eeg_channels(boardId);
+
+        // Map UI channel selection (1, 2, 3, 4) to actual Ganglion EEG rows
+        std::vector<int> eegRows;
+        for (int ch : activeChannels) {
+            eegRows.push_back(allEegChannels[ch - 1]); // Convert 1-based UI to 0-based index
         }
 
-        // 2. Fetch the data using BrainFlow v5's smart array
-        BrainFlowArray<double, 2> data = board->get_current_board_data(300);
-        int num_samples = data.get_size(1); // Get the number of columns (samples)
-
-        // 3. Apply Filters for each active channel
-        for (int channel : activeEegChannels) {
-            // We use .get_address(channel) to give the filter the raw memory pointer it needs
-            double* channel_ptr = data.get_address(channel);
-
-            // Notch Filter ~50Hz
-            DataFilter::perform_bandstop(channel_ptr, num_samples, samplingRate, 48.0, 52.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
-            // Notch Filter ~60Hz
-            DataFilter::perform_bandstop(channel_ptr, num_samples, samplingRate, 58.0, 62.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
-            // Bandpass Filter (5.0 - 15.0)
-            DataFilter::perform_bandpass(channel_ptr, num_samples, samplingRate, 5.0, 15.0, 4, (int)FilterTypes::BESSEL, 0);
+        // 3. Apply filters to selected channels
+        for (int row : eegRows) {
+            // BrainFlowArray provides .get_address(row) to extract the raw pointer for the filters
+            DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 50.0, 4.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
+            DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 60.0, 4.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
+            DataFilter::perform_bandpass(data.get_address(row), numSamples, samplingRate, 10.0, 10.0, 4, (int)FilterTypes::BESSEL, 0);
         }
 
         // 4. Calculate Band Powers
-        // The v5 API beautifully accepts the BrainFlowArray and std::vector directly!
-        // It returns a std::pair of vectors (first = averages, second = std_devs)
-        auto bands = DataFilter::get_avg_band_powers(data, activeEegChannels, samplingRate, true);
+        // BrainFlow returns a pair of raw double arrays (size 5 each: Delta, Theta, Alpha, Beta, Gamma)
+        std::pair<double*, double*> bands = DataFilter::get_avg_band_powers(data, eegRows, samplingRate, true);
 
-        // 5. Concatenate into a 1D Feature Vector (5 avg + 5 stddev = 10 features)
+        // Combine them into a continuous feature vector for the ML model (5 averages + 5 stddevs = 10 elements)
         std::vector<double> feature_vector(10);
         for (int i = 0; i < 5; i++) {
-            feature_vector[i] = bands.first[i];     // Average band powers
-            feature_vector[i + 5] = bands.second[i]; // Standard deviation
+            feature_vector[i] = bands.first[i];       // 0-4: Averages
+            feature_vector[i + 5] = bands.second[i];  // 5-9: Standard Deviations
         }
 
-        // NOTE: No manual delete[] memory cleanup is needed here anymore! 
-        // BrainFlowArray and std::pair clean themselves up automatically.
+        // 5. Run the ML Prediction
+        // Capture the returned std::vector<double> from the model
+        std::vector<double> prediction = concentrationModel->predict(feature_vector.data(), (int)feature_vector.size());
 
-        // Use .data() to give the function the raw double* it wants, and .size() for the length
-        double* prediction = &concentration_model.predict(feature_vector.data(), (int)feature_vector.size())[0];
+        // Safely extract the first element if the vector isn't empty
+        double concentration = prediction.empty() ? 0.0 : prediction[0];
 
-        // Make sure the prediction actually worked and returned data
-        if (prediction != nullptr) {
-            concentrationMeasure = *prediction; // Update the atomic variable
+        // 6. Safely store the results for the UI to read
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            currentConcentration = (float)concentration;
 
-            // Because MLModel still uses the old API, we MUST manually delete this!
-            delete[] prediction;
+            for (int i = 0; i < 5; i++) {
+                currentBandPowers[i] = feature_vector[i];
+            }
         }
+
+        // 7. CRITICAL CLEANUP
+        // Because get_avg_band_powers returns raw arrays allocated on the heap, 
+        // we must manually delete them to prevent severe memory leaks!
+        delete[] bands.first;
+        delete[] bands.second;
     }
+    catch (const BrainFlowException& err) {
+        std::cerr << "[BrainFlow Processing Error] " << err.what() << std::endl;
+    }
+}
 
-    concentration_model.release();
+float BrainflowAlgorithm::GetConcentration() {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    return currentConcentration;
+}
+
+std::vector<double> BrainflowAlgorithm::GetBandPowers() {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    return currentBandPowers;
 }
