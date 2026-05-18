@@ -1,5 +1,90 @@
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#else
+#include <filesystem>
+namespace fs = std::filesystem;
+#endif
+
 #include "UI.h"
 #include "implot.h"
+
+void UIManager::UpdateAvailablePorts() {
+    availablePorts.clear();
+
+#if defined(_WIN32) || defined(_WIN64)
+    // --- WINDOWS REGISTRY LOOKUP ---
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DEVICEMAP\\SERIALCOMM", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        char valueName[256];
+        BYTE valueData[256];
+        DWORD nameSize, dataSize, type;
+        DWORD index = 0;
+
+        while (true) {
+            nameSize = sizeof(valueName);
+            dataSize = sizeof(valueData);
+            LONG res = RegEnumValueA(hKey, index, valueName, &nameSize, NULL, &type, valueData, &dataSize);
+
+            if (res == ERROR_SUCCESS) {
+                if (type == REG_SZ) {
+                    availablePorts.push_back((char*)valueData);
+                }
+                index++;
+            }
+            else {
+                break; // No more registry keys found
+            }
+        }
+        RegCloseKey(hKey);
+    }
+#elif defined(__APPLE__)
+    // --- MACOS DIRECTORY SCANNING ---
+    try {
+        if (fs::exists("/dev")) {
+            for (const auto& entry : fs::directory_iterator("/dev")) {
+                std::string path = entry.path().string();
+                // /dev/cu.* is the standard for connecting/dialing out in macOS
+                if (path.find("/dev/cu.") == 0) {
+                    // Ignore core internal bluetooth devices if you want to avoid clutter
+                    if (path.find("Bluetooth-Incoming-Port") == std::string::npos) {
+                        availablePorts.push_back(path);
+                    }
+                }
+            }
+        }
+    }
+    catch (...) {}
+#else
+    // --- LINUX DIRECTORY SCANNING ---
+    try {
+        if (fs::exists("/dev")) {
+            for (const auto& entry : fs::directory_iterator("/dev")) {
+                std::string name = entry.path().filename().string();
+                if (name.find("ttyUSB") == 0 || name.find("ttyACM") == 0) {
+                    availablePorts.push_back(entry.path().string());
+                }
+            }
+        }
+    }
+    catch (...) {}
+#endif
+
+    // SAFE FALLBACK: If no active device was detected, populate defaults so UI isn't broken
+    if (availablePorts.empty()) {
+#if defined(_WIN32) || defined(_WIN64)
+        availablePorts = { "COM1", "COM2", "COM3", "COM4" };
+#elif defined(__APPLE__)
+        availablePorts = { "/dev/cu.usbserial-usbdevice", "/dev/cu.Bluetooth-Modem" };
+#else
+        availablePorts = { "/dev/ttyUSB0", "/dev/ttyACM0" };
+#endif
+    }
+
+    // Reset index bounds safety check
+    if (selectedPortIdx >= static_cast<int>(availablePorts.size())) {
+        selectedPortIdx = 0;
+    }
+}
 
 UIManager::UIManager() : window(nullptr) {}
 
@@ -59,6 +144,7 @@ bool UIManager::Initialize() {
 
     // 5. Apply Theme
     SetupCustomTheme();
+    UpdateAvailablePorts();
 
     return true;
 }
@@ -105,6 +191,17 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
     isRunning = false;
 }
 
+const char* ProPortVectorGetter(void* user_data, int idx) {
+    auto* ports_vec = static_cast<std::vector<std::string>*>(user_data);
+
+    // Safety check: ensure pointer is valid and index is in bounds
+    if (!ports_vec || idx < 0 || idx >= static_cast<int>(ports_vec->size())) {
+        return nullptr; // Returning null is safe; ImGui handles it gracefully
+    }
+
+    // Extract and return the raw C-string
+    return (*ports_vec)[idx].c_str();
+}
 
 void UIManager::RenderUI() {
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -136,8 +233,17 @@ void UIManager::RenderUI() {
 
     // Connection Inputs
     ImGui::InputText("MAC", macAddress, IM_ARRAYSIZE(macAddress));
-    const char* ports[] = { "COM1", "COM2", "COM3", "COM4" }; // Update dynamically in reality
-    ImGui::Combo("Port", &selectedPort, ports, IM_ARRAYSIZE(ports));
+    ImGui::Spacing();
+
+    // Render Dynamic Combo Box Selector
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 45.0f); // Leave room for refresh button
+    ImGui::Combo("Port", &selectedPortIdx, ProPortVectorGetter, &availablePorts, static_cast<int>(availablePorts.size()));
+
+    ImGui::SameLine();
+    if (ImGui::Button("##Refresh", ImVec2(35, 0))) { // "Refresh Icon" button
+        UpdateAvailablePorts();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rescan system serial channels");
 
     ImGui::Spacing();
 

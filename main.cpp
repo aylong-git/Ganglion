@@ -25,7 +25,7 @@ int main() {
             // 1. Handle UI Button Presses
             if (uiManager.reqConnect) {
                 // Get the text from the UI Input Boxes
-                std::string port = uiManager.macAddress; // or port array depending on your UI layout
+                std::string port = uiManager.availablePorts[uiManager.selectedPortIdx]; // or port array depending on your UI layout
                 std::string mac = uiManager.macAddress;
 
                 bool success = backend.Connect(port, mac);

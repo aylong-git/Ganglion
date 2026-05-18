@@ -95,9 +95,9 @@ void BrainflowAlgorithm::ProcessData(const std::vector<int>& activeChannels) {
         // 3. Apply filters to selected channels
         for (int row : eegRows) {
             // BrainFlowArray provides .get_address(row) to extract the raw pointer for the filters
-            DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 50.0, 4.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
-            DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 60.0, 4.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
-            DataFilter::perform_bandpass(data.get_address(row), numSamples, samplingRate, 10.0, 10.0, 4, (int)FilterTypes::BESSEL, 0);
+            DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 48.0, 52.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
+            DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 58.0, 62.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
+            DataFilter::perform_bandpass(data.get_address(row), numSamples, samplingRate, 5.0, 15.0, 4, (int)FilterTypes::BESSEL, 0);
         }
 
         // 4. Calculate Band Powers

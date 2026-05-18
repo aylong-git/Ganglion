@@ -37,8 +37,10 @@ public:
 
     // --- Connection Triggers and State ---
     char macAddress[64] = "";
-    int selectedPort = 0;
+    int selectedPortIdx = 0;
+    std::vector<std::string> availablePorts;
     bool isConnected = false;
+    void UpdateAvailablePorts();
 
     // Asynchronous flags to signal main.cpp when buttons are clicked
     bool reqConnect = false;
