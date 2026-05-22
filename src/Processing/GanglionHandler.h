@@ -9,10 +9,10 @@
 #include "data_filter.h"
 #include "ml_model.h"
 
-class BrainflowAlgorithm {
+class GanglionHandler {
 public:
-    BrainflowAlgorithm();
-    ~BrainflowAlgorithm();
+    GanglionHandler();
+    ~GanglionHandler();
 
     // Core Board Commands
     bool Connect(const std::string& port, const std::string& macAddress);

@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "HeadObject.h"
+
 // Add a simple scrolling buffer struct for ImPlot historical data
 struct ScrollingBuffer {
     int MaxSize;
@@ -31,6 +33,8 @@ class UIManager {
 public:
     UIManager();
     ~UIManager();
+
+    HeadObject headObject;
     bool Initialize();
     void Run(std::atomic<bool>& isRunning);
     void Cleanup();
@@ -41,6 +45,9 @@ public:
     std::vector<std::string> availablePorts;
     bool isConnected = false;
     void UpdateAvailablePorts();
+
+    bool showPortErrorPopup = false;
+    std::string portErrorMessage = "";
 
     // Asynchronous flags to signal main.cpp when buttons are clicked
     bool reqConnect = false;

@@ -1,17 +1,17 @@
-#include "BrainflowAlgorithm.h"
+#include "GanglionHandler.h"
 #include <iostream>
 #include <thread>
 
-BrainflowAlgorithm::BrainflowAlgorithm() : board(nullptr), concentrationModel(nullptr), connected(false) {
+GanglionHandler::GanglionHandler() : board(nullptr), concentrationModel(nullptr), connected(false) {
     currentConcentration = 0.0f;
     currentBandPowers = { 0.0, 0.0, 0.0, 0.0, 0.0 };
 }
 
-BrainflowAlgorithm::~BrainflowAlgorithm() {
+GanglionHandler::~GanglionHandler() {
     Disconnect();
 }
 
-bool BrainflowAlgorithm::Connect(const std::string& port, const std::string& macAddress) {
+bool GanglionHandler::Connect(const std::string& port, const std::string& macAddress) {
     if (connected) return true;
 
     try {
@@ -45,7 +45,7 @@ bool BrainflowAlgorithm::Connect(const std::string& port, const std::string& mac
     }
 }
 
-void BrainflowAlgorithm::Disconnect() {
+void GanglionHandler::Disconnect() {
     if (board != nullptr) {
         try {
             if (board->is_prepared()) {
@@ -69,11 +69,11 @@ void BrainflowAlgorithm::Disconnect() {
     std::cout << "[BrainFlow] Disconnected.\n";
 }
 
-bool BrainflowAlgorithm::IsConnected() const {
+bool GanglionHandler::IsConnected() const {
     return connected.load();
 }
 
-void BrainflowAlgorithm::ProcessData(const std::vector<int>& activeChannels) {
+void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
     if (!connected || board == nullptr || activeChannels.empty()) return;
 
     try {
@@ -139,12 +139,12 @@ void BrainflowAlgorithm::ProcessData(const std::vector<int>& activeChannels) {
     }
 }
 
-float BrainflowAlgorithm::GetConcentration() {
+float GanglionHandler::GetConcentration() {
     std::lock_guard<std::mutex> lock(dataMutex);
     return currentConcentration;
 }
 
-std::vector<double> BrainflowAlgorithm::GetBandPowers() {
+std::vector<double> GanglionHandler::GetBandPowers() {
     std::lock_guard<std::mutex> lock(dataMutex);
     return currentBandPowers;
 }

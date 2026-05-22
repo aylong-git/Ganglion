@@ -4,80 +4,128 @@
 #include <filesystem>
 namespace fs = std::filesystem;
 #endif
-
+#include <setupapi.h>
+#include <devguid.h>
 #include "UI.h"
 #include "implot.h"
+
+#pragma comment(lib, "setupapi.lib")
 
 void UIManager::UpdateAvailablePorts() {
     availablePorts.clear();
 
 #if defined(_WIN32) || defined(_WIN64)
-    // --- WINDOWS REGISTRY LOOKUP ---
-    HKEY hKey;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DEVICEMAP\\SERIALCOMM", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        char valueName[256];
-        BYTE valueData[256];
-        DWORD nameSize, dataSize, type;
-        DWORD index = 0;
+    // ==================================================
+    // --- WINDOWS HARDWARE SETUPAPI FILTERING ---
+    // ==================================================
+    // Query Windows for devices belonging to the "Ports" (COM & LPT) setup class
+    HDEVINFO deviceInfoSet = SetupDiGetClassDevs(&GUID_DEVCLASS_PORTS, NULL, NULL, DIGCF_PRESENT);
+    if (deviceInfoSet != INVALID_HANDLE_VALUE) {
+        SP_DEVINFO_DATA deviceInfoData;
+        deviceInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
 
-        while (true) {
-            nameSize = sizeof(valueName);
-            dataSize = sizeof(valueData);
-            LONG res = RegEnumValueA(hKey, index, valueName, &nameSize, NULL, &type, valueData, &dataSize);
+        for (DWORD i = 0; SetupDiEnumDeviceInfo(deviceInfoSet, i, &deviceInfoData); i++) {
+            char friendlyName[256] = { 0 };
+            DWORD dataType;
 
-            if (res == ERROR_SUCCESS) {
-                if (type == REG_SZ) {
-                    availablePorts.push_back((char*)valueData);
+            // Retrieve the Device Manager "Friendly Name" string
+            if (SetupDiGetDeviceRegistryPropertyA(deviceInfoSet, &deviceInfoData, SPDRP_FRIENDLYNAME,
+                &dataType, (PBYTE)friendlyName, sizeof(friendlyName), NULL)) {
+                std::string nameStr(friendlyName);
+
+                // Filter out non-Ganglion devices safely
+                if (nameStr.find("Serial") != std::string::npos) {
+                    size_t start = nameStr.find("(COM");
+                    size_t end = nameStr.find(")", start);
+                    if (start != std::string::npos && end != std::string::npos) {
+                        std::string extractedPort = nameStr.substr(start + 1, end - start - 1);
+                        availablePorts.push_back(extractedPort);
+                    }
                 }
-                index++;
-            }
-            else {
-                break; // No more registry keys found
             }
         }
-        RegCloseKey(hKey);
+        SetupDiDestroyDeviceInfoList(deviceInfoSet);
     }
+
 #elif defined(__APPLE__)
-    // --- MACOS DIRECTORY SCANNING ---
+    // ==================================================
+    // --- MACOS IOKIT HARDWARE FILTERING ---
+    // ==================================================
+    // Note: Requires linking: -framework IOKit -framework CoreFoundation
+    io_iterator_t iter;
+    CFMutableDictionaryRef matchingDict = IOServiceMatching(kIOSerialBSDServiceValue);
+    if (matchingDict) {
+        // Look through all serial devices (including USB Modems)
+        CFDictionarySetValue(matchingDict, CFSTR(kIOSerialBSDTypeKey), CFSTR(kIOSerialBSDAllTypes));
+        if (IOServiceGetMatchingServices(0, matchingDict, &iter) == KERN_SUCCESS) {
+            io_object_t device;
+            while ((device = IOIteratorNext(iter))) {
+                // Fetch the actual dialout callout path (e.g., /dev/cu.usbmodem14101)
+                CFTypeRef pathRef = IORegistryEntryCreateCFProperty(device, CFSTR(kIOCalloutDeviceKey), kCFAllocatorDefault, 0);
+                if (pathRef) {
+                    char pathBuf[256];
+                    if (CFStringGetCString((CFStringRef)pathRef, pathBuf, sizeof(pathBuf), kCFStringEncodingUTF8)) {
+                        std::string pathStr(pathBuf);
+                        bool isDongle = false;
+
+                        // Navigate to the parent USB layout configuration to read the hardware manufacturer name
+                        io_registry_entry_t parent;
+                        if (IORegistryEntryGetParentEntry(device, kIOServicePlane, &parent) == KERN_SUCCESS) {
+                            CFTypeRef propRef = IORegistryEntryCreateCFProperty(parent, CFSTR("Product Name"), kCFAllocatorDefault, 0);
+                            if (propRef) {
+                                char prodBuf[256];
+                                if (CFStringGetCString((CFStringRef)propRef, prodBuf, sizeof(prodBuf), kCFStringEncodingUTF8)) {
+                                    std::string prodStr(prodBuf);
+                                    if (prodStr.find("serial") != std::string::npos) {
+                                        isDongle = true;
+                                    }
+                                }
+                                CFRelease(propRef);
+                            }
+                            IOObjectRelease(parent);
+                        }
+
+                        if (isDongle) {
+                            availablePorts.push_back(pathStr);
+                        }
+                    }
+                    CFRelease(pathRef);
+                }
+                IOObjectRelease(device);
+            }
+            IOIteratorRelease(iter);
+        }
+    }
+
+#else
+    // ==================================================
+    // --- LINUX SYSFS HARDWARE FILTERING ---
+    // ==================================================
     try {
         if (fs::exists("/dev")) {
             for (const auto& entry : fs::directory_iterator("/dev")) {
-                std::string path = entry.path().string();
-                // /dev/cu.* is the standard for connecting/dialing out in macOS
-                if (path.find("/dev/cu.") == 0) {
-                    // Ignore core internal bluetooth devices if you want to avoid clutter
-                    if (path.find("Bluetooth-Incoming-Port") == std::string::npos) {
-                        availablePorts.push_back(path);
+                std::string name = entry.path().filename().string();
+                if (name.find("ttyUSB") == 0 || name.find("ttyACM") == 0) {
+                    // Linux exposes hardware device strings completely through the sysfs filesystem tree
+                    std::ifstream productFile("/sys/class/tty/" + name + "/device/../product");
+                    if (productFile.is_open()) {
+                        std::string productStr;
+                        std::getline(productFile, productStr);
+                        if (productStr.find("serial") != std::string::npos) {
+                            availablePorts.push_back(entry.path().string());
+                        }
                     }
                 }
             }
         }
     }
     catch (...) {}
-#else
-    // --- LINUX DIRECTORY SCANNING ---
-    try {
-        if (fs::exists("/dev")) {
-            for (const auto& entry : fs::directory_iterator("/dev")) {
-                std::string name = entry.path().filename().string();
-                if (name.find("ttyUSB") == 0 || name.find("ttyACM") == 0) {
-                    availablePorts.push_back(entry.path().string());
-                }
-            }
-        }
-    }
-    catch (...) {}
 #endif
 
-    // SAFE FALLBACK: If no active device was detected, populate defaults so UI isn't broken
+    // SAFE UX FALLBACK: Display an explicit warning item instead of dummy default strings 
+    // that would cause a hardware crash loop if clicked.
     if (availablePorts.empty()) {
-#if defined(_WIN32) || defined(_WIN64)
-        availablePorts = { "COM1", "COM2", "COM3", "COM4" };
-#elif defined(__APPLE__)
-        availablePorts = { "/dev/cu.usbserial-usbdevice", "/dev/cu.Bluetooth-Modem" };
-#else
-        availablePorts = { "/dev/ttyUSB0", "/dev/ttyACM0" };
-#endif
+        availablePorts.push_back("No Dongle Found");
     }
 
     // Reset index bounds safety check
@@ -125,7 +173,7 @@ bool UIManager::Initialize() {
     ImGui_ImplOpenGL3_Init("#version 330");
 
     // 4. Load Fonts
-    const char* fontPath = "C:\\Windows\\Fonts\\segoeui.ttf";
+    const char* fontPath = "../assets/segoeui.ttf";
     std::vector<int> desiredSizes = { 16, 20, 24, 32, 40, 48, 60 };
 
     ImFontConfig fontConfig;
@@ -145,6 +193,8 @@ bool UIManager::Initialize() {
     // 5. Apply Theme
     SetupCustomTheme();
     UpdateAvailablePorts();
+
+    headObject.InitModel("../assets/free_head.obj", "../assets");
 
     return true;
 }
@@ -435,6 +485,35 @@ void UIManager::RenderUI() {
     ImGui::EndChild();
 
     ImGui::Columns(1);
+
+    // 1. Check if main.cpp told us to show the popup
+    if (showPortErrorPopup) {
+        ImGui::OpenPopup("Connection Error");
+        showPortErrorPopup = false; // Reset the trigger
+    }
+
+    // 2. Render the Modal Box (Locks the background until user clicks OK)
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("Connection Error", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+
+        // Warning Icon and text
+        ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "CRITICAL CONNECTION FAILURE");
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::Text("%s", portErrorMessage.c_str());
+        ImGui::Spacing();
+        ImGui::Text("Please ensure the port is correct and not used by another application.");
+        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+
+        // Centered OK Button
+        ImGui::SetCursorPosX((ImGui::GetWindowSize().x - 120) * 0.5f);
+        if (ImGui::Button("OK", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     ImGui::End();
 }
 

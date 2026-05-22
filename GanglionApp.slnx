@@ -1,7 +1,0 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="GanglionApp.vcxproj" Id="8078ccae-75b9-486c-98b5-3e98f293e63f" />
-</Solution>

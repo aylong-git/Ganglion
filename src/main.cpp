@@ -1,13 +1,15 @@
 #include <iostream>
 #include <thread>
 #include <atomic>
-#include "UI/UI.h"
-#include "Processing/BrainflowAlgorithm.h"
+#include "UI.h"
+#include "GanglionHandler.h"
+#include "HeadObject.h"
 
 int main() {
     // Initialize our two main systems
     UIManager uiManager;
-    BrainflowAlgorithm backend;
+    GanglionHandler ganglionBoard;
+    HeadObject head_object;
 
     if (!uiManager.Initialize()) {
         std::cerr << "Failed to initialize UI. Exiting.\n";
@@ -25,22 +27,29 @@ int main() {
             // 1. Handle UI Button Presses
             if (uiManager.reqConnect) {
                 // Get the text from the UI Input Boxes
-                std::string port = uiManager.availablePorts[uiManager.selectedPortIdx]; // or port array depending on your UI layout
+                std::string port = uiManager.availablePorts[uiManager.selectedPortIdx];
                 std::string mac = uiManager.macAddress;
 
-                bool success = backend.Connect(port, mac);
-                uiManager.isConnected = success;
+                bool success = ganglionBoard.Connect(port, mac);
+                if (success) {
+                    uiManager.isConnected = true;
+                }
+                else {
+                    uiManager.isConnected = false;
+                    uiManager.showPortErrorPopup = true;
+                    uiManager.portErrorMessage = "Port " + port + " is busy, invalid, or used by another device!";
+                }
                 uiManager.reqConnect = false;
             }
 
             if (uiManager.reqDisconnect) {
-                backend.Disconnect();
+                ganglionBoard.Disconnect();
                 uiManager.isConnected = false;
                 uiManager.reqDisconnect = false;
             }
 
             // 2. Process Data if Connected
-            if (backend.IsConnected()) {
+            if (ganglionBoard.IsConnected()) {
 
                 // Convert boolean UI checkboxes into a list of active channels (1, 2, 3, 4)
                 std::vector<int> activeChannels;
@@ -49,13 +58,13 @@ int main() {
                 }
 
                 // Crunch the numbers!
-                backend.ProcessData(activeChannels);
+                ganglionBoard.ProcessData(activeChannels);
 
                 // 3. Push new data back to the UI
-                uiManager.currentConcentration = backend.GetConcentration();
+                uiManager.currentConcentration = ganglionBoard.GetConcentration();
                 uiManager.concentrationHistory.AddPoint(uiManager.currentConcentration);
 
-                std::vector<double> bands = backend.GetBandPowers();
+                std::vector<double> bands = ganglionBoard.GetBandPowers();
                 for (int i = 0; i < 5; i++) {
                     uiManager.currentBandPowers[i] = bands[i];
                     uiManager.bandHistory[i].AddPoint((float)bands[i]);
@@ -80,7 +89,7 @@ int main() {
         workerThread.join();
     }
 
-    backend.Disconnect();
+    ganglionBoard.Disconnect();
     uiManager.Cleanup();
 
     return 0;
