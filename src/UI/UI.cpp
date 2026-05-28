@@ -1,3 +1,4 @@
+#include <glad/glad.h>
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #else
@@ -159,12 +160,15 @@ bool UIManager::Initialize() {
         return false;
     }
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // Enable vsync
+    glfwSwapInterval(1);
 
-    // 3. Initialize Dear ImGui
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "Failed to initialize GLAD!" << std::endl;
+        return false;
+    }
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-
     ImPlot::CreateContext();
 
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -194,7 +198,7 @@ bool UIManager::Initialize() {
     SetupCustomTheme();
     UpdateAvailablePorts();
 
-    headObject.InitModel("../assets/free_head.obj", "../assets");
+    headObject.InitModel("../assets/head_object.obj", "../assets");
 
     return true;
 }
@@ -390,20 +394,98 @@ void UIManager::RenderUI() {
         if (ImGui::BeginTabItem("Impedance Check")) {
             ImGui::Spacing();
 
+            // Top Control Button
             if (ImGui::Button(isCheckingImpedance ? "Stop Checking" : "Check Impedance", ImVec2(200, 40))) {
                 isCheckingImpedance = !isCheckingImpedance;
-                // Trigger impedance Python/BrainFlow routine here
             }
             ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
+            // Calculate widths BEFORE initializing columns to keep layout boundaries stable
+            float totalWidth = ImGui::GetContentRegionAvail().x;
+            float leftColumnWidth = totalWidth * 0.60f;
+
+            // Initialize 2-Column Layout
+            ImGui::Columns(2, "ImpedanceColumns", false);
+            ImGui::SetColumnWidth(0, leftColumnWidth);
+
+            // ===================================
+            // COLUMN 1: 3D HEAD VIEWPORT
+            // ===================================
+            ImGui::BeginChild("HeadViewPanel", ImVec2(0, 0), true);
+
+            ImVec2 viewportSize = ImGui::GetContentRegionAvail();
+            headObject.Draw();
+
+            headObject.UpdateSubObjectScreenPositions(viewportSize, ImGui::GetItemRectMin());
+
+            struct PanelData {
+                int id;
+                bool isNew;
+                ImVec2 startPos;
+            };
+            static std::vector<PanelData> openPanels;
+
+            // NEW: Global focus restoration trigger flag
+            static bool pushPanelsToFront = false;
+
+            if (ImGui::IsMouseReleased(0) && ImGui::IsItemHovered() && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.0f)) {
+                ImVec2 mousePos = ImGui::GetMousePos();
+                float closestDistance = 40.0f;
+                int clickedID = -1;
+
+                for (const auto& obj : headObject.subObjects) {
+                    if (!obj.isSelectable) continue;
+
+                    float dx = mousePos.x - obj.screenPos.x;
+                    float dy = mousePos.y - obj.screenPos.y;
+                    float dist = sqrt(dx * dx + dy * dy);
+
+                    if (dist < closestDistance) {
+                        closestDistance = dist;
+                        clickedID = obj.id;
+                    }
+                }
+
+                if (clickedID != -1) {
+                    headObject.selectedObjectID = clickedID;
+
+                    bool alreadyOpen = false;
+                    for (const auto& panel : openPanels) {
+                        if (panel.id == clickedID) {
+                            alreadyOpen = true;
+                            break;
+                        }
+                    }
+
+                    if (!alreadyOpen) {
+                        openPanels.push_back({ clickedID, true, ImVec2(mousePos.x - 15, mousePos.y - 15) });
+                    }
+                }
+
+                // Whenever a click registers in the viewport, tell all panels to pop back to the top
+                pushPanelsToFront = true;
+            }
+
+            ImGui::EndChild();
+            ImGui::NextColumn();
+
+            // ===================================
+            // COLUMN 2: IMPEDANCE VALUE LIST
+            // ===================================
+            // CHANGED: Set height to 0 here as well to match the left column
+            ImGui::BeginChild("ImpedanceListPanel", ImVec2(0, 0), true);
+            ImGui::Text("Electrode Status");
+            ImGui::Separator();
+            ImGui::Spacing();
+
             const char* chanNames[5] = { "1", "2", "3", "4", "REF" };
             for (int i = 0; i < 5; i++) {
-                // Determine color based on impedance (Python logic mapping)
+                // Determine color based on impedance
                 ImU32 col = IM_COL32(255, 0, 0, 255); // Default Red
-                if (impedanceValues[i] <= 20)      col = IM_COL32(34, 90, 8, 255); // Dark Green
-                else if (impedanceValues[i] <= 50) col = IM_COL32(0, 255, 0, 255); // Bright Green
-                else if (impedanceValues[i] <= 100)col = IM_COL32(255, 255, 0, 255);// Yellow
-                else if (impedanceValues[i] <= 200)col = IM_COL32(255, 165, 0, 255);// Orange
+                if (impedanceValues[i] <= 20)      col = IM_COL32(34, 90, 8, 255);
+                else if (impedanceValues[i] <= 50) col = IM_COL32(0, 255, 0, 255);
+                else if (impedanceValues[i] <= 100)col = IM_COL32(255, 255, 0, 255);
+                else if (impedanceValues[i] <= 200)col = IM_COL32(255, 165, 0, 255);
 
                 // Draw circle indicator
                 ImVec2 p = ImGui::GetCursorScreenPos();
@@ -411,8 +493,66 @@ void UIManager::RenderUI() {
 
                 ImGui::SetCursorScreenPos(ImVec2(p.x + 30, p.y));
                 ImGui::Text("Channel %s: %.1f kΩ", chanNames[i], impedanceValues[i]);
-                ImGui::Spacing();
+                ImGui::Spacing(); ImGui::Spacing();
             }
+            ImGui::EndChild();
+
+            // ===================================
+            // FLOATING COMPONENT INFO WINDOWS
+            // ===================================
+            for (auto it = openPanels.begin(); it != openPanels.end(); ) {
+                bool keepOpen = true;
+
+                const SubObject* targetObj = nullptr;
+                for (const auto& obj : headObject.subObjects) {
+                    if (obj.id == it->id) {
+                        targetObj = &obj;
+                        break;
+                    }
+                }
+
+                if (targetObj) {
+                    if (it->isNew) {
+                        ImGui::SetNextWindowPos(it->startPos, ImGuiCond_Always);
+                        it->isNew = false;
+                    }
+
+                    std::string windowLabel = targetObj->name + "###CompWindow_" + std::to_string(targetObj->id);
+
+                    ImGui::Begin(windowLabel.c_str(), &keepOpen,
+                        ImGuiWindowFlags_AlwaysAutoResize |
+                        ImGuiWindowFlags_NoSavedSettings);
+
+                    // FOCUS GUARD: If a background click happened, pull this window back over the viewport
+                    if (pushPanelsToFront) {
+                        ImGui::SetWindowFocus();
+                    }
+
+                    ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Component Node: %d", targetObj->id);
+                    ImGui::Separator();
+                    ImGui::Spacing();
+                    ImGui::TextWrapped("%s", targetObj->description.c_str());
+
+                    ImGui::End();
+                }
+
+                if (!keepOpen) {
+                    if (headObject.selectedObjectID == it->id) {
+                        headObject.selectedObjectID = -1;
+                    }
+                    it = openPanels.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+
+            // Reset our focus pulse trigger after all windows have successfully processed
+            if (pushPanelsToFront) {
+                pushPanelsToFront = false;
+            }
+
+            ImGui::Columns(1);
             ImGui::EndTabItem();
         }
 
