@@ -51,6 +51,9 @@
     <ClCompile Include="src\imgui\imgui_widgets.cpp">
       <Filter>Header Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\Processing\Utils.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Processing\GanglionHandler.h">
@@ -132,6 +135,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="inc\stb_image.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Processing\Utils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <algorithm>
 
+#include "Utils.h"
+
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
 
@@ -44,12 +46,12 @@ const char* vertexShaderSource = R"(
         float ny2 = n.y * cx - n.z * sx; float nz2 = n.y * sx + n.z * cx;
         n.y = ny2; n.z = nz2;
 
-        gl_Position = vec4(p.x, p.y, p.z * 0.1, 1.0);
+        gl_Position = vec4(-p.x, p.y, p.z * 0.1, 1.0);
         TexCoord = aTexCoord; 
         Normal = n; 
         VertexColor = aColor;
         
-        ObjectID = aObjectID; // Now the compiler knows what these are!
+        ObjectID = aObjectID;
     }
 )";
 
@@ -71,9 +73,10 @@ const char* fragmentShaderSource = R"(
         float keyDiff = max(dot(norm, keyLightDir), 0.0);
         vec3 fillLightDir = normalize(vec3(-0.8, -0.3, 0.5));
         float fillDiff = max(dot(norm, fillLightDir), 0.0) * 0.3; 
+
         float ambient = 0.35;
-        
-        float totalLighting = ambient + (keyDiff * 0.6) + fillDiff;
+        float totalLighting = ambient + (keyDiff * 0.7) + (fillDiff * 0.5);
+
         vec4 texColor = texture(texture1, TexCoord);
         vec3 finalColor = VertexColor * texColor.rgb * totalLighting;
 
@@ -82,6 +85,7 @@ const char* fragmentShaderSource = R"(
             finalColor = mix(finalColor, vec3(0.0, 0.4, 1.0), 0.4); 
         }
         
+        finalColor = pow(finalColor, vec3(1.0 / 2.2));
         FragColor = vec4(finalColor, 1.0);
     }
 )";
@@ -153,16 +157,44 @@ void HeadObject::InitModel(const std::string& objFilePath, const std::string& mt
 
     for (size_t s = 0; s < shapes.size(); s++) {
         SubObject obj;
-        obj.id = static_cast<int>(s) + 1; // ID 1, 2, 3...
+        obj.id = static_cast<int>(s) + 1;
         obj.name = shapes[s].name;
-        if (obj.name != "head_object") {
-
-            obj.isSelectable = true;
-            obj.description = "This is the " + obj.name + " component.";
+        if (obj.name == "head_object") {
+            obj.isSelectable = false;
+            obj.description = "";
         }
         else {
-            obj.isSelectable = false;
-            obj.description = ""; // We don't need a description for background objects
+            obj.isSelectable = true;
+
+            if (obj.name == "D_G") {
+                obj.description = "Connect this electrode to the D_G pin.";
+                obj.textureID = LoadComponentTexture("../assets/ganglion_pin/D_G_A1.jpeg");
+            }
+
+            if (obj.name == "REF") {
+                obj.description = "Connect this electrode to the REF pin.";
+                obj.textureID = LoadComponentTexture("../assets/ganglion_pin/REF_A2.jpeg");
+            }
+
+            if (obj.name == "Fp1") {
+                obj.description = "Connect this electrode to the +1 pin.";
+                obj.textureID = LoadComponentTexture("../assets/ganglion_pin/CH1_Fp1.jpeg");
+            }
+
+            if (obj.name == "Fp2") {
+                obj.description = "Connect this electrode to the +2 pin.";
+                obj.textureID = LoadComponentTexture("../assets/ganglion_pin/CH2_Fp2.jpeg");
+            }
+
+            if (obj.name == "T3") {
+                obj.description = "Connect this electrode to the +3 pin.";
+                obj.textureID = LoadComponentTexture("../assets/ganglion_pin/CH3_T3.jpeg");
+            }
+
+            if (obj.name == "T4") {
+                obj.description = "Connect this electrode to the +4 pin.";
+                obj.textureID = LoadComponentTexture("../assets/ganglion_pin/CH4_T4.jpeg");
+            }
         }
 
         float sumX = 0, sumY = 0, sumZ = 0;
@@ -408,7 +440,7 @@ void HeadObject::UpdateSubObjectScreenPositions(ImVec2 viewportSize, ImVec2 view
         py = y2; pz = z2;
 
         // 3. Map to 2D Screen Pixels
-        float screenX = viewportPos.x + (px + 1.0f) * 0.5f * viewportSize.x;
+        float screenX = viewportPos.x + (1.0f - px) * 0.5f * viewportSize.x;
         float screenY = viewportPos.y + (1.0f - py) * 0.5f * viewportSize.y;
 
         obj.screenPos = ImVec2(screenX, screenY);

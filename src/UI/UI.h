@@ -17,16 +17,29 @@ struct ScrollingBuffer {
     int MaxSize;
     int Offset;
     std::vector<float> Data;
+
     ScrollingBuffer(int max_size = 50) {
         MaxSize = max_size;
         Offset = 0;
         Data.reserve(MaxSize);
     }
+
     void AddPoint(float y) {
-        if (Data.size() < MaxSize) Data.push_back(y);
-        else { Data[Offset] = y; Offset = (Offset + 1) % MaxSize; }
+        if (Data.size() < MaxSize) {
+            Data.push_back(y);
+        }
+        else {
+            Data[Offset] = y;
+            Offset = (Offset + 1) % MaxSize;
+        }
     }
-    void Erase() { if (Data.size() > 0) { Data.clear(); Offset = 0; } }
+
+    void Erase() {
+        if (Data.size() > 0) {
+            Data.clear();
+            Offset = 0;
+        }
+    }
 };
 
 class UIManager {
@@ -41,6 +54,7 @@ public:
 
     // --- Connection Triggers and State ---
     char macAddress[64] = "";
+    unsigned int macHelpTextureID = 0;
     int selectedPortIdx = 0;
     std::vector<std::string> availablePorts;
     bool isConnected = false;
@@ -63,7 +77,7 @@ public:
 
     // --- Calculated Metrics (Written by main.cpp) ---
     float currentConcentration = 0.0f;
-    ScrollingBuffer concentrationHistory{ 40 };
+    ScrollingBuffer concentrationHistory{ 200 };
 
     // --- Band Power Arrays (Written by main.cpp) ---
     bool selectedWaves[5] = { true, true, true, true, true };

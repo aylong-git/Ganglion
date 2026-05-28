@@ -9,8 +9,11 @@ namespace fs = std::filesystem;
 #include <devguid.h>
 #include "UI.h"
 #include "implot.h"
+#include "Utils.h"
 
 #pragma comment(lib, "setupapi.lib")
+
+#define SAMPLING_RATE 200.0
 
 void UIManager::UpdateAvailablePorts() {
     availablePorts.clear();
@@ -199,6 +202,7 @@ bool UIManager::Initialize() {
     UpdateAvailablePorts();
 
     headObject.InitModel("../assets/head_object.obj", "../assets");
+    macHelpTextureID = LoadComponentTexture("../assets/mac_help.jpeg");
 
     return true;
 }
@@ -241,7 +245,6 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
         glfwSwapBuffers(window);
     }
 
-    // If the window closes, tell the rest of the program to shut down
     isRunning = false;
 }
 
@@ -285,16 +288,39 @@ void UIManager::RenderUI() {
     if (fonts.find(24) != fonts.end()) ImGui::PopFont();
     ImGui::Spacing();
 
-    // Connection Inputs
-    ImGui::InputText("MAC", macAddress, IM_ARRAYSIZE(macAddress));
-    ImGui::Spacing();
+    // 1. Draw the text label on the left
+    ImGui::Text("MAC");
 
-    // Render Dynamic Combo Box Selector
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 45.0f); // Leave room for refresh button
-    ImGui::Combo("Port", &selectedPortIdx, ProPortVectorGetter, &availablePorts, static_cast<int>(availablePorts.size()));
+    // 2. Put the question mark directly next to it
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+
+    // 3. Listen for the mouse hovering over the question mark
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::Text("Enter the device MAC address (e.g., XX:XX:XX:XX:XX:XX)");
+        ImGui::Spacing();
+
+        // 4. Render your image inside the tooltip!
+        // NOTE: Make sure to load this texture ID exactly like you did for your 3D objects
+        if (macHelpTextureID != 0) {
+            ImVec2 tooltipImageSize = ImVec2(250.0f, 150.0f); // Adjust to match your image aspect ratio
+            ImGui::Image((void*)(intptr_t)macHelpTextureID, tooltipImageSize);
+        }
+        ImGui::EndTooltip();
+    }
 
     ImGui::SameLine();
-    if (ImGui::Button("##Refresh", ImVec2(35, 0))) { // "Refresh Icon" button
+    ImGui::InputText("##MAC_Input", macAddress, IM_ARRAYSIZE(macAddress));
+
+
+    ImGui::Text("Port");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 45.0f);
+    ImGui::Combo("##Port_Combo", &selectedPortIdx, ProPortVectorGetter, &availablePorts, static_cast<int>(availablePorts.size()));
+
+    ImGui::SameLine();
+    if (ImGui::Button("##Refresh", ImVec2(35, 0))) {
         UpdateAvailablePorts();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rescan system serial channels");
@@ -304,18 +330,17 @@ void UIManager::RenderUI() {
     // Connect Button
     if (isConnected) {
         if (ImGui::Button("Disconnect", ImVec2(-1, 40))) {
-            reqDisconnect = true; // main.cpp will see this and disconnect!
+            reqDisconnect = true;
         }
     }
     else {
         if (ImGui::Button("Connect", ImVec2(-1, 40))) {
-            reqConnect = true; // main.cpp will see this and connect!
+            reqConnect = true;
         }
     }
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
-    // Control Settings (Moved from Python Option Frame)
     ImGui::Text("EEG Channels:");
     ImGui::Checkbox("1", &eegChannels[0]); ImGui::SameLine();
     ImGui::Checkbox("2", &eegChannels[1]); ImGui::SameLine();
@@ -367,21 +392,41 @@ void UIManager::RenderUI() {
 
             // Concentration Line Plot
             if (ImPlot::BeginPlot("Concentration Level", ImVec2(-1, -1))) {
-                ImPlot::SetupAxes("Window", "Concentration Level", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_Lock);
-                ImPlot::SetupAxesLimits(0, 40, 0.0, 1.0, ImPlotCond_Always);
+                // 1. Change the axis label to "Time (s)" and lock it completely
+                ImPlot::SetupAxes("Time (s)", "Concentration Level", ImPlotAxisFlags_Lock, ImPlotAxisFlags_Lock);
 
-                // Plot history line
-                if (concentrationHistory.Data.size() > 0) {
-                    ImPlot::PlotLine("Level", &concentrationHistory.Data[0], concentrationHistory.Data.size());
+                // Lock the viewport permanently from 0.0 to 1.0 seconds
+                ImPlot::SetupAxesLimits(0.0, 1.0, 0.0, 1.0, ImPlotCond_Always);
+
+                // 2. Unpack and convert sample indices to static timestamps
+                int currentSize = (int)concentrationHistory.Data.size();
+                if (currentSize > 0) {
+                    std::vector<double> histX(currentSize);
+                    std::vector<double> histY(currentSize);
+
+                    for (int i = 0; i < currentSize; ++i) {
+                        // Unwraps the ring buffer starting from the oldest point
+                        int ringIdx = (concentrationHistory.Offset + i) % currentSize;
+
+                        histX[i] = (double)i / SAMPLING_RATE;
+                        histY[i] = (double)concentrationHistory.Data[ringIdx];
+                    }
+
+                    ImPlotSpec historySpec;
+                    historySpec.LineColor = ImVec4(0.0f, 0.5f, 1.0f, 1.0f); // Blue history line
+                    historySpec.LineWeight = 2.0f;
+
+                    ImPlot::PlotLine("Level", histX.data(), histY.data(), currentSize, historySpec);
                 }
 
-                // Plot red threshold horizontal line
-                double threshLineX[2] = { concentrationHistory.Data.front(), concentrationHistory.Data.back() };
-                double threshLineY[2] = { focusThreshold, focusThreshold };
-                ImPlotSpec spec;
-                spec.LineColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
-                spec.LineWeight = 2.0f;
-                ImPlot::PlotLine("Threshold Target", threshLineX, threshLineY, 2, spec);
+                // 3. Stretch the red threshold line perfectly across our static 0.0 to 1.0s window
+                double threshLineX[2] = { 0.0, 1.0 };
+                double threshLineY[2] = { (double)focusThreshold, (double)focusThreshold };
+
+                ImPlotSpec thresholdSpec;
+                thresholdSpec.LineColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+                thresholdSpec.LineWeight = 2.0f;
+                ImPlot::PlotLine("Threshold Target", threshLineX, threshLineY, 2, thresholdSpec);
 
                 ImPlot::EndPlot();
             }
@@ -430,7 +475,7 @@ void UIManager::RenderUI() {
 
             if (ImGui::IsMouseReleased(0) && ImGui::IsItemHovered() && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.0f)) {
                 ImVec2 mousePos = ImGui::GetMousePos();
-                float closestDistance = 40.0f;
+                float closestDistance = viewportSize.x * 0.02f;
                 int clickedID = -1;
 
                 for (const auto& obj : headObject.subObjects) {
@@ -528,10 +573,25 @@ void UIManager::RenderUI() {
                         ImGui::SetWindowFocus();
                     }
 
-                    ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Component Node: %d", targetObj->id);
-                    ImGui::Separator();
-                    ImGui::Spacing();
-                    ImGui::TextWrapped("%s", targetObj->description.c_str());
+                    if (!ImGui::IsWindowCollapsed()) {
+                        ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Component Node: %d", targetObj->id);
+                        ImGui::Separator();
+                        ImGui::Spacing();
+
+                        // NEW: Render the specific image assigned to this object ID
+                        if (targetObj->textureID != 0) {
+                            // Specify display dimensions (e.g., 220 pixels wide, 140 high)
+                            ImVec2 displaySize = ImVec2(220.0f, 140.0f);
+
+                            // Cast the OpenGL ID safely to an ImTextureID pointer type
+                            ImGui::Image((void*)(intptr_t)targetObj->textureID, displaySize);
+                            ImGui::Spacing();
+                            ImGui::Separator();
+                            ImGui::Spacing();
+                        }
+
+                        ImGui::TextWrapped("%s", targetObj->description.c_str());
+                    }
 
                     ImGui::End();
                 }
@@ -657,7 +717,6 @@ void UIManager::RenderUI() {
     ImGui::End();
 }
 
-// Helper to convert hex colors to ImVec4 for ImPlot
 ImVec4 ColorConvertU32ToFloat4(ImU32 in) {
     float s = 1.0f / 255.0f;
     return ImVec4(
@@ -677,4 +736,3 @@ void UIManager::Cleanup() {
         window = nullptr;
     }
 }
-

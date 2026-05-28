@@ -32,7 +32,8 @@ struct SubObject {
     std::string description;
     float centerX, centerY, centerZ;
     ImVec2 screenPos;
-    bool isSelectable;               // NEW: Should the mouse ignore this?
+    bool isSelectable;
+    unsigned int textureID = 0;
 };
 
 class HeadObject {
@@ -54,3 +55,5 @@ public:
     std::vector<SubObject> subObjects;
     int selectedObjectID = -1;
 };
+
+unsigned int LoadComponentTexture(const char* filepath);
