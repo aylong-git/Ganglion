@@ -37,7 +37,7 @@ int main() {
                 else {
                     uiManager.isConnected = false;
                     uiManager.showPortErrorPopup = true;
-                    uiManager.portErrorMessage = "Port " + port + " is busy, invalid, or used by another device!";
+                    uiManager.portErrorMessage = "Port " + port + " is busy, invalid, or used by another device, try replugging.";
                 }
                 uiManager.reqConnect = false;
             }

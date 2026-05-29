@@ -9,6 +9,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <cmath>
 
 #include "HeadObject.h"
 
@@ -16,15 +17,18 @@
 struct ScrollingBuffer {
     int MaxSize;
     int Offset;
+    unsigned long long TotalPoints;
     std::vector<float> Data;
 
     ScrollingBuffer(int max_size = 50) {
         MaxSize = max_size;
         Offset = 0;
+        TotalPoints = 0;
         Data.reserve(MaxSize);
     }
 
     void AddPoint(float y) {
+        TotalPoints++;
         if (Data.size() < MaxSize) {
             Data.push_back(y);
         }
@@ -34,12 +38,7 @@ struct ScrollingBuffer {
         }
     }
 
-    void Erase() {
-        if (Data.size() > 0) {
-            Data.clear();
-            Offset = 0;
-        }
-    }
+    void Erase() { if (Data.size() > 0) { Data.clear(); Offset = 0; TotalPoints = 0; } }
 };
 
 class UIManager {
@@ -53,7 +52,8 @@ public:
     void Cleanup();
 
     // --- Connection Triggers and State ---
-    char macAddress[64] = "";
+    char macParts[6][3] = { "", "", "", "", "", "" };
+    char macAddress[18] = "";
     unsigned int macHelpTextureID = 0;
     int selectedPortIdx = 0;
     std::vector<std::string> availablePorts;
@@ -75,9 +75,9 @@ public:
     std::string input1Text = "Up";
     std::string input2Text = "Down";
 
-    // --- Calculated Metrics (Written by main.cpp) ---
     float currentConcentration = 0.0f;
-    ScrollingBuffer concentrationHistory{ 200 };
+    double xRange = 2.0;
+    ScrollingBuffer concentrationHistory{ static_cast<int>(std::round(200.0f * xRange)) };
 
     // --- Band Power Arrays (Written by main.cpp) ---
     bool selectedWaves[5] = { true, true, true, true, true };
@@ -92,7 +92,6 @@ private:
     GLFWwindow* window;
     std::map<int, ImFont*> fonts;
 
-    // Internal UI functions (main.cpp doesn't need to call these)
     void SetupCustomTheme();
     void RenderUI();
 };

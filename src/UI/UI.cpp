@@ -10,6 +10,7 @@ namespace fs = std::filesystem;
 #include "UI.h"
 #include "implot.h"
 #include "Utils.h"
+#include <cctype>
 
 #pragma comment(lib, "setupapi.lib")
 
@@ -288,31 +289,65 @@ void UIManager::RenderUI() {
     if (fonts.find(24) != fonts.end()) ImGui::PopFont();
     ImGui::Spacing();
 
-    // 1. Draw the text label on the left
     ImGui::Text("MAC");
-
-    // 2. Put the question mark directly next to it
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
 
-    // 3. Listen for the mouse hovering over the question mark
     if (ImGui::IsItemHovered()) {
         ImGui::BeginTooltip();
-        ImGui::Text("Enter the device MAC address (e.g., XX:XX:XX:XX:XX:XX)");
+        ImGui::Text("Enter the device MAC address");
         ImGui::Spacing();
-
-        // 4. Render your image inside the tooltip!
-        // NOTE: Make sure to load this texture ID exactly like you did for your 3D objects
         if (macHelpTextureID != 0) {
-            ImVec2 tooltipImageSize = ImVec2(250.0f, 150.0f); // Adjust to match your image aspect ratio
+            ImVec2 tooltipImageSize = ImVec2(250.0f, 150.0f);
             ImGui::Image((void*)(intptr_t)macHelpTextureID, tooltipImageSize);
         }
         ImGui::EndTooltip();
     }
 
     ImGui::SameLine();
-    ImGui::InputText("##MAC_Input", macAddress, IM_ARRAYSIZE(macAddress));
 
+    static int nextFocusTarget = -1;
+
+    for (int i = 0; i < 6; ++i) {
+        if (i > 0) {
+            ImGui::SameLine(0, 4.0f);
+            ImGui::Text(":");
+            ImGui::SameLine(0, 4.0f);
+        }
+
+        ImGui::SetNextItemWidth(25.0f);
+        ImGui::PushID(i);
+
+        if (nextFocusTarget == i) {
+            ImGui::SetKeyboardFocusHere(0);
+            nextFocusTarget = -1;
+        }
+
+        bool edited = ImGui::InputText("", macParts[i], 3, ImGuiInputTextFlags_CharsHexadecimal);
+
+        if (edited && strlen(macParts[i]) == 2 && i < 5) {
+            nextFocusTarget = i + 1;
+        }
+
+        if (ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGuiKey_Backspace, true) && i > 0) {
+            if (strlen(macParts[i]) == 0 && !edited) {
+                nextFocusTarget = i - 1;
+            }
+        }
+
+        ImGui::PopID();
+    }
+
+    ImGui::SameLine(0, 8.0f);
+    if (ImGui::Button("Clear")) {
+        for (int i = 0; i < 6; ++i) {
+            macParts[i][0] = '\0';
+        }
+        nextFocusTarget = 0;
+    }
+
+    snprintf(macAddress, sizeof(macAddress), "%s:%s:%s:%s:%s:%s",
+        macParts[0], macParts[1], macParts[2], macParts[3], macParts[4], macParts[5]);
 
     ImGui::Text("Port");
     ImGui::SameLine();
@@ -387,7 +422,7 @@ void UIManager::RenderUI() {
             ImU32 statusColor = (currentConcentration >= focusThreshold) ? IM_COL32(34, 90, 8, 255) : IM_COL32(255, 0, 0, 255);
             draw_list->AddCircleFilled(ImVec2(p.x + 20, p.y + 20), 15.0f, statusColor);
             ImGui::SetCursorScreenPos(ImVec2(p.x + 50, p.y));
-            ImGui::Text("\nStatus: %s", (currentConcentration >= focusThreshold) ? "Focusing" : "Not Focusing");
+            ImGui::Text("\nStatus: %s", (currentConcentration >= focusThreshold) ? "Focusing" : "Relaxing");
             ImGui::Spacing(); ImGui::Spacing();
 
             // Concentration Line Plot
@@ -395,8 +430,12 @@ void UIManager::RenderUI() {
                 // 1. Change the axis label to "Time (s)" and lock it completely
                 ImPlot::SetupAxes("Time (s)", "Concentration Level", ImPlotAxisFlags_Lock, ImPlotAxisFlags_Lock);
 
-                // Lock the viewport permanently from 0.0 to 1.0 seconds
-                ImPlot::SetupAxesLimits(0.0, 1.0, 0.0, 1.0, ImPlotCond_Always);
+                double xMax = (concentrationHistory.TotalPoints < (SAMPLING_RATE * xRange)) ? SAMPLING_RATE * xRange : (double)concentrationHistory.TotalPoints;
+                double xMin = (xMax < SAMPLING_RATE * xRange) ? 0.0 : xMax - (SAMPLING_RATE * xRange);
+                xMax = xMax / SAMPLING_RATE;
+                xMin = xMin / SAMPLING_RATE;
+
+                ImPlot::SetupAxesLimits(xMin, xMax, 0.0, 1.0, ImPlotCond_Always);
 
                 // 2. Unpack and convert sample indices to static timestamps
                 int currentSize = (int)concentrationHistory.Data.size();
@@ -404,11 +443,13 @@ void UIManager::RenderUI() {
                     std::vector<double> histX(currentSize);
                     std::vector<double> histY(currentSize);
 
+                    double x0 = (double)(concentrationHistory.TotalPoints - currentSize);
+
                     for (int i = 0; i < currentSize; ++i) {
                         // Unwraps the ring buffer starting from the oldest point
                         int ringIdx = (concentrationHistory.Offset + i) % currentSize;
 
-                        histX[i] = (double)i / SAMPLING_RATE;
+                        histX[i] = (x0 + i) / SAMPLING_RATE;
                         histY[i] = (double)concentrationHistory.Data[ringIdx];
                     }
 
@@ -420,7 +461,7 @@ void UIManager::RenderUI() {
                 }
 
                 // 3. Stretch the red threshold line perfectly across our static 0.0 to 1.0s window
-                double threshLineX[2] = { 0.0, 1.0 };
+                double threshLineX[2] = { xMin, xMax };
                 double threshLineY[2] = { (double)focusThreshold, (double)focusThreshold };
 
                 ImPlotSpec thresholdSpec;
@@ -557,40 +598,68 @@ void UIManager::RenderUI() {
                 }
 
                 if (targetObj) {
+                    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysVerticalScrollbar;
+
+                    ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+                    // 1. Calculate Width (e.g., 12.5% of total screen width)
+                    float responsiveWidth = viewport->WorkSize.x * 0.125f;
+                    if (responsiveWidth < 220.0f) responsiveWidth = 220.0f;
+
+                    // NEW: 2. Calculate Height (e.g., 35% of total screen height)
+                    float responsiveHeight = viewport->WorkSize.y * 0.35f;
+                    if (responsiveHeight < 300.0f) responsiveHeight = 300.0f;
+
+                    // 3. Apply the limits on the very first frame
                     if (it->isNew) {
                         ImGui::SetNextWindowPos(it->startPos, ImGuiCond_Always);
+
+                        // Set the exact initial dimensions based on our responsive math
+                        ImGui::SetNextWindowSize(ImVec2(responsiveWidth, responsiveHeight), ImGuiCond_Always);
+
                         it->isNew = false;
                     }
 
                     std::string windowLabel = targetObj->name + "###CompWindow_" + std::to_string(targetObj->id);
 
-                    ImGui::Begin(windowLabel.c_str(), &keepOpen,
-                        ImGuiWindowFlags_AlwaysAutoResize |
-                        ImGuiWindowFlags_NoSavedSettings);
+                    ImGui::Begin(windowLabel.c_str(), &keepOpen, windowFlags);
 
-                    // FOCUS GUARD: If a background click happened, pull this window back over the viewport
                     if (pushPanelsToFront) {
                         ImGui::SetWindowFocus();
                     }
 
                     if (!ImGui::IsWindowCollapsed()) {
+
+                        float currentWidth = ImGui::GetWindowWidth();
+                        float fontScale = currentWidth / responsiveWidth;
+
+                        if (fontScale < 1.0f) fontScale = 1.0f;
+                        if (fontScale > 2.0f) fontScale = 2.0f;
+                        ImGui::SetWindowFontScale(fontScale);
+
+                        // Title Text
                         ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Component Node: %d", targetObj->id);
                         ImGui::Separator();
                         ImGui::Spacing();
 
-                        // NEW: Render the specific image assigned to this object ID
+                        // IMAGE RATIO PRESERVATION
                         if (targetObj->textureID != 0) {
-                            // Specify display dimensions (e.g., 220 pixels wide, 140 high)
-                            ImVec2 displaySize = ImVec2(220.0f, 140.0f);
+                            // 1. Get exact available horizontal width in the user's resized panel
+                            float availWidth = ImGui::GetContentRegionAvail().x;
+                            float aspectRatio = 0.83f;
 
-                            // Cast the OpenGL ID safely to an ImTextureID pointer type
-                            ImGui::Image((void*)(intptr_t)targetObj->textureID, displaySize);
+                            // 3. Math ensures height perfectly matches the width context natively
+                            ImVec2 dynamicDisplaySize = ImVec2(availWidth, availWidth * aspectRatio);
+
+                            ImGui::Image((void*)(intptr_t)targetObj->textureID, dynamicDisplaySize);
                             ImGui::Spacing();
                             ImGui::Separator();
                             ImGui::Spacing();
                         }
 
                         ImGui::TextWrapped("%s", targetObj->description.c_str());
+
+                        ImGui::SetWindowFontScale(1.0f); // Reset
                     }
 
                     ImGui::End();
@@ -607,7 +676,6 @@ void UIManager::RenderUI() {
                 }
             }
 
-            // Reset our focus pulse trigger after all windows have successfully processed
             if (pushPanelsToFront) {
                 pushPanelsToFront = false;
             }

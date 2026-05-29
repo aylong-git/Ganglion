@@ -166,12 +166,12 @@ void HeadObject::InitModel(const std::string& objFilePath, const std::string& mt
         else {
             obj.isSelectable = true;
 
-            if (obj.name == "D_G") {
+            if (obj.name == "A1") {
                 obj.description = "Connect this electrode to the D_G pin.";
                 obj.textureID = LoadComponentTexture("../assets/ganglion_pin/D_G_A1.jpeg");
             }
 
-            if (obj.name == "REF") {
+            if (obj.name == "A2") {
                 obj.description = "Connect this electrode to the REF pin.";
                 obj.textureID = LoadComponentTexture("../assets/ganglion_pin/REF_A2.jpeg");
             }
