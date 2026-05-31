@@ -394,7 +394,6 @@ void UIManager::RenderUI() {
     if (ImGui::Button("Set##2")) { /* Logic to await keypress */ }
 
     ImGui::Spacing();
-    ImGui::SliderFloat("Focus Threshold", &focusThreshold, 0.1f, 0.9f);
     ImGui::SliderFloat("Refresh Time (s)", &statusRefreshTime, 0.1f, 4.0f);
 
     ImGui::EndChild();
@@ -460,14 +459,66 @@ void UIManager::RenderUI() {
                     ImPlot::PlotLine("Level", histX.data(), histY.data(), currentSize, historySpec);
                 }
 
-                // 3. Stretch the red threshold line perfectly across our static 0.0 to 1.0s window
-                double threshLineX[2] = { xMin, xMax };
-                double threshLineY[2] = { (double)focusThreshold, (double)focusThreshold };
+                // ==========================================
+                // 3. INTERACTIVE THRESHOLD DRAG LINE
+                // ==========================================
+                // ImPlot requires a double, so we cast your float temporarily
+                double currentThresh = (double)focusThreshold;
 
-                ImPlotSpec thresholdSpec;
-                thresholdSpec.LineColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
-                thresholdSpec.LineWeight = 2.0f;
-                ImPlot::PlotLine("Threshold Target", threshLineX, threshLineY, 2, thresholdSpec);
+                // DragLineY creates a horizontal line that the user can physically grab and move.
+                // It replaces both the external slider AND your old PlotLine!
+                if (ImPlot::DragLineY(1, &currentThresh, ImVec4(1.0f, 0.0f, 0.0f, 1.0f), 2.0f)) {
+                    // Clamp the line so the user cannot drag it above 0.9 or below 0.1
+                    if (currentThresh < 0.1) currentThresh = 0.1;
+                    if (currentThresh > 0.9) currentThresh = 0.9;
+
+                    // Save back to your variable
+                    focusThreshold = (float)currentThresh;
+                }
+
+                // ==========================================
+                // THRESHOLD LABEL
+                // ==========================================
+                // 1. Format the text to include the exact float value (e.g., "Threshold level = 0.50")
+
+                bool useFont = (fonts.find(20) != fonts.end());
+                if (useFont) ImGui::PushFont(fonts[20]);
+
+                char threshLabel[32];
+                snprintf(threshLabel, sizeof(threshLabel), "Threshold level = %.2f", focusThreshold);
+
+                // 2. Push Red Color
+                ImPlot::PushStyleColor(ImPlotCol_InlayText, IM_COL32(255, 0, 0, 255));
+
+                // 3. Render the text. 
+                // We place the anchor at X = 0.1 (left side so it doesn't overlap the center text).
+                // Y = focusThreshold.
+                // ImVec2(0, -10) physically pushes the text 10 pixels UP so it hovers above the line.
+                ImPlot::PlotText(threshLabel, 1.0, (double)focusThreshold, ImVec2(0, -10));
+
+                // 4. Pop the color
+                ImPlot::PopStyleColor();
+                if (useFont) ImGui::PopFont();
+
+                // ==========================================
+                // NEW: 4. ADD STATIC ZONE LABELS
+                // ==========================================
+                bool useLargeFont = (fonts.find(32) != fonts.end());
+                if (useLargeFont) ImGui::PushFont(fonts[32]);
+
+                // Push RED text color for "Focus"
+                ImPlot::PushStyleColor(ImPlotCol_InlayText, IM_COL32(255, 0, 0, 255));
+                ImPlot::PlotText("Focus", 1.0, 0.96);
+                ImPlot::PopStyleColor(); // Always pop the color when done!
+
+                // Push GREEN text color for "Relax" 
+                // (This uses the exact same green color you use for your status circle!)
+                ImPlot::PushStyleColor(ImPlotCol_InlayText, IM_COL32(34, 90, 8, 255));
+                ImPlot::PlotText("Relax", 1.0, 0.05);
+                ImPlot::PopStyleColor();
+
+                // Revert to the standard font so it doesn't make everything else huge
+                if (useLargeFont) ImGui::PopFont();
 
                 ImPlot::EndPlot();
             }
@@ -516,7 +567,7 @@ void UIManager::RenderUI() {
 
             if (ImGui::IsMouseReleased(0) && ImGui::IsItemHovered() && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.0f)) {
                 ImVec2 mousePos = ImGui::GetMousePos();
-                float closestDistance = viewportSize.x * 0.02f;
+                float closestDistance = viewportSize.x * 0.05f;
                 int clickedID = -1;
 
                 for (const auto& obj : headObject.subObjects) {

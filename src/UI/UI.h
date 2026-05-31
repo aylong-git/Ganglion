@@ -13,7 +13,6 @@
 
 #include "HeadObject.h"
 
-// Add a simple scrolling buffer struct for ImPlot historical data
 struct ScrollingBuffer {
     int MaxSize;
     int Offset;

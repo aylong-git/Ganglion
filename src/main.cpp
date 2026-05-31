@@ -30,6 +30,8 @@ int main() {
                 std::string port = uiManager.availablePorts[uiManager.selectedPortIdx];
                 std::string mac = uiManager.macAddress;
 
+                if (mac.find(":::::") != std::string::npos) mac = "";
+
                 bool success = ganglionBoard.Connect(port, mac);
                 if (success) {
                     uiManager.isConnected = true;
@@ -38,6 +40,7 @@ int main() {
                     uiManager.isConnected = false;
                     uiManager.showPortErrorPopup = true;
                     uiManager.portErrorMessage = "Port " + port + " is busy, invalid, or used by another device, try replugging.";
+                    ganglionBoard.Disconnect();
                 }
                 uiManager.reqConnect = false;
             }
