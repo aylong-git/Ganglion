@@ -71,8 +71,6 @@ public:
     int inputModeIdx = 0;                               // 0 = Press, 1 = Hold
     float focusThreshold = 0.75f;
     float statusRefreshTime = 0.1f;
-    std::string input1Text = "Up";
-    std::string input2Text = "Down";
 
     float currentConcentration = 0.0f;
     double xRange = 2.0;

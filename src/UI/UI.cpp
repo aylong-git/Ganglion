@@ -10,6 +10,7 @@ namespace fs = std::filesystem;
 #include "UI.h"
 #include "implot.h"
 #include "Utils.h"
+#include "InputManager.h"
 #include <cctype>
 
 #pragma comment(lib, "setupapi.lib")
@@ -262,10 +263,14 @@ const char* ProPortVectorGetter(void* user_data, int idx) {
 }
 
 void UIManager::RenderUI() {
+
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
 
     ImGui::Begin("Main Dashboard", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+
+    float totalWidth = ImGui::GetContentRegionAvail().x;
+    float totalHeight = ImGui::GetContentRegionAvail().y;
 
     // ==========================================
     // HEADER
@@ -276,8 +281,9 @@ void UIManager::RenderUI() {
     ImGui::Separator();
     ImGui::Spacing();
 
+    float leftColumnWidth = totalWidth * 0.25f;
     ImGui::Columns(2, "MainColumns", false);
-    ImGui::SetColumnWidth(0, 350.0f); // Left Panel Width
+    ImGui::SetColumnWidth(0, leftColumnWidth);
 
     // ==========================================
     // LEFT PANEL: CONNECTION & GLOBAL SETTINGS
@@ -298,7 +304,7 @@ void UIManager::RenderUI() {
         ImGui::Text("Enter the device MAC address");
         ImGui::Spacing();
         if (macHelpTextureID != 0) {
-            ImVec2 tooltipImageSize = ImVec2(250.0f, 150.0f);
+            ImVec2 tooltipImageSize = ImVec2(250.0f, 241.0f);
             ImGui::Image((void*)(intptr_t)macHelpTextureID, tooltipImageSize);
         }
         ImGui::EndTooltip();
@@ -306,16 +312,29 @@ void UIManager::RenderUI() {
 
     ImGui::SameLine();
 
-    static int nextFocusTarget = -1;
+    float buttonWidth = 50.0f;
+    float spaceBetween = ImGui::GetStyle().ItemSpacing.x;
 
+    float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    float buttonStartX = rightEdgeX - buttonWidth;
+
+    float currentX = ImGui::GetCursorPosX();
+    float availableForInputsAndColons = buttonStartX - spaceBetween - currentX;
+
+    float colonWidth = ImGui::CalcTextSize(":").x;
+    float totalColonsWidth = 5.0f * (colonWidth);
+
+    float singleInputWidth = (availableForInputsAndColons - totalColonsWidth) / 6.0f;
+
+    static int nextFocusTarget = -1;
     for (int i = 0; i < 6; ++i) {
         if (i > 0) {
-            ImGui::SameLine(0, 4.0f);
+            ImGui::SameLine(0, 1.0f);
             ImGui::Text(":");
-            ImGui::SameLine(0, 4.0f);
+            ImGui::SameLine(0, 1.0f);
         }
 
-        ImGui::SetNextItemWidth(25.0f);
+        ImGui::SetNextItemWidth(singleInputWidth);
         ImGui::PushID(i);
 
         if (nextFocusTarget == i) {
@@ -323,7 +342,7 @@ void UIManager::RenderUI() {
             nextFocusTarget = -1;
         }
 
-        bool edited = ImGui::InputText("", macParts[i], 3, ImGuiInputTextFlags_CharsHexadecimal);
+        bool edited = ImGui::InputText("##mac", macParts[i], 3, ImGuiInputTextFlags_CharsHexadecimal);
 
         if (edited && strlen(macParts[i]) == 2 && i < 5) {
             nextFocusTarget = i + 1;
@@ -338,8 +357,9 @@ void UIManager::RenderUI() {
         ImGui::PopID();
     }
 
-    ImGui::SameLine(0, 8.0f);
-    if (ImGui::Button("Clear")) {
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(buttonStartX);
+    if (ImGui::Button("Clear", ImVec2(buttonWidth, 0))) {
         for (int i = 0; i < 6; ++i) {
             macParts[i][0] = '\0';
         }
@@ -351,11 +371,11 @@ void UIManager::RenderUI() {
 
     ImGui::Text("Port");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 45.0f);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - buttonWidth - ImGui::GetStyle().ItemSpacing.x);
     ImGui::Combo("##Port_Combo", &selectedPortIdx, ProPortVectorGetter, &availablePorts, static_cast<int>(availablePorts.size()));
 
     ImGui::SameLine();
-    if (ImGui::Button("##Refresh", ImVec2(35, 0))) {
+    if (ImGui::Button("Refresh##Refresh", ImVec2(buttonWidth, 0))) {
         UpdateAvailablePorts();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rescan system serial channels");
@@ -385,13 +405,6 @@ void UIManager::RenderUI() {
     ImGui::Spacing();
     const char* inputModes[] = { "Press", "Hold" };
     ImGui::Combo("Input Mode", &inputModeIdx, inputModes, IM_ARRAYSIZE(inputModes));
-
-    ImGui::Spacing();
-    ImGui::Text("Input 1 (Relax): %s", input1Text.c_str()); ImGui::SameLine(250);
-    if (ImGui::Button("Set##1")) { /* Logic to await keypress */ }
-
-    ImGui::Text("Input 2 (Focus): %s", input2Text.c_str()); ImGui::SameLine(250);
-    if (ImGui::Button("Set##2")) { /* Logic to await keypress */ }
 
     ImGui::Spacing();
     ImGui::SliderFloat("Refresh Time (s)", &statusRefreshTime, 0.1f, 4.0f);
@@ -490,10 +503,6 @@ void UIManager::RenderUI() {
                 // 2. Push Red Color
                 ImPlot::PushStyleColor(ImPlotCol_InlayText, IM_COL32(255, 0, 0, 255));
 
-                // 3. Render the text. 
-                // We place the anchor at X = 0.1 (left side so it doesn't overlap the center text).
-                // Y = focusThreshold.
-                // ImVec2(0, -10) physically pushes the text 10 pixels UP so it hovers above the line.
                 ImPlot::PlotText(threshLabel, 1.0, (double)focusThreshold, ImVec2(0, -10));
 
                 // 4. Pop the color
@@ -501,25 +510,149 @@ void UIManager::RenderUI() {
                 if (useFont) ImGui::PopFont();
 
                 // ==========================================
-                // NEW: 4. ADD STATIC ZONE LABELS
+                // MODERN OVERLAY: INTERACTIVE ZONE LABELS
                 // ==========================================
+                // 1. Let the manager update its background states before drawing
+                InputManager::GetInstance().Update();
+
+                // Get quick references to our current states
+                auto& inputMgr = InputManager::GetInstance();
+                bool isFocusBinding = (inputMgr.GetBindingTarget() == InputManager::Target::Focus);
+                bool isRelaxBinding = (inputMgr.GetBindingTarget() == InputManager::Target::Relax);
+
                 bool useLargeFont = (fonts.find(32) != fonts.end());
+                bool useBtnFont = (fonts.find(16) != fonts.end());
+
+                double midX = (xMin + xMax) / 2.0;
+                ImVec2 backupCursorPos = ImGui::GetCursorPos();
+
+                // ------------------------------------------
+                // FOCUS OVERLAY REGION (Top-Center)
+                // ------------------------------------------
+                ImVec2 focusPixelPos = ImPlot::PlotToPixels(midX, 0.96);
+
+                // Fetch the dynamic key name straight from the Manager!
+                std::string displayFocusKey = isFocusBinding ? "..." : inputMgr.GetKeyName(InputManager::Target::Focus);
+
+                char focusFullBuf[64];
+                snprintf(focusFullBuf, sizeof(focusFullBuf), "Focus (Key: %s)", displayFocusKey.c_str());
+
                 if (useLargeFont) ImGui::PushFont(fonts[32]);
-
-                // Push RED text color for "Focus"
-                ImPlot::PushStyleColor(ImPlotCol_InlayText, IM_COL32(255, 0, 0, 255));
-                ImPlot::PlotText("Focus", 1.0, 0.96);
-                ImPlot::PopStyleColor(); // Always pop the color when done!
-
-                // Push GREEN text color for "Relax" 
-                // (This uses the exact same green color you use for your status circle!)
-                ImPlot::PushStyleColor(ImPlotCol_InlayText, IM_COL32(34, 90, 8, 255));
-                ImPlot::PlotText("Relax", 1.0, 0.05);
-                ImPlot::PopStyleColor();
-
-                // Revert to the standard font so it doesn't make everything else huge
+                float focusTextWidth = ImGui::CalcTextSize(focusFullBuf).x;
                 if (useLargeFont) ImGui::PopFont();
 
+                float focusTotalWidth = focusTextWidth + ImGui::GetStyle().ItemSpacing.x + 45.0f;
+                focusPixelPos.x -= (focusTotalWidth * 0.5f);
+                focusPixelPos.y -= 16.0f;
+
+                if (useLargeFont) ImGui::PushFont(fonts[32]);
+                ImGui::SetCursorScreenPos(focusPixelPos);
+
+                ImVec4 focusColor = ImVec4(1.0f, 0.2f, 0.2f, 1.0f);
+                ImGui::TextColored(focusColor, "Focus (Key: ");
+
+                ImGui::SameLine(0, 0);
+                ImVec2 focusKeyStart = ImGui::GetCursorScreenPos();
+                ImGui::TextColored(focusColor, "%s", displayFocusKey.c_str());
+                ImVec2 focusKeyEnd = ImGui::GetItemRectMax();
+
+                ImGui::GetWindowDrawList()->AddLine(
+                    ImVec2(focusKeyStart.x, focusKeyEnd.y - 1.0f),
+                    ImVec2(focusKeyEnd.x, focusKeyEnd.y - 1.0f),
+                    ImGui::GetColorU32(focusColor), 2.0f
+                );
+
+                ImGui::SameLine(0, 0);
+                ImGui::TextColored(focusColor, ")");
+
+                ImGui::SameLine();
+                ImVec2 focusBtnPos = ImGui::GetCursorScreenPos();
+                focusBtnPos.y += (32.0f - 22.0f) * 0.5f;
+
+                if (useLargeFont) ImGui::PopFont();
+
+                if (useBtnFont) ImGui::PushFont(fonts[16]);
+                ImGui::SetCursorScreenPos(focusBtnPos);
+
+                if (isFocusBinding) {
+                    ImGui::BeginDisabled();
+                    ImGui::Button("...##2", ImVec2(45, 0));
+                    ImGui::EndDisabled();
+                }
+                else {
+                    if (isRelaxBinding) ImGui::BeginDisabled();
+                    if (ImGui::Button("Set##2", ImVec2(45, 0))) {
+                        inputMgr.StartBinding(InputManager::Target::Focus); // Tell manager to start listening
+                    }
+                    if (isRelaxBinding) ImGui::EndDisabled();
+                }
+                if (useBtnFont) ImGui::PopFont();
+
+
+                // ------------------------------------------
+                // RELAX OVERLAY REGION (Bottom-Center)
+                // ------------------------------------------
+                ImVec2 relaxPixelPos = ImPlot::PlotToPixels(midX, 0.05);
+
+                // Fetch the dynamic key name straight from the Manager!
+                std::string displayRelaxKey = isRelaxBinding ? "..." : inputMgr.GetKeyName(InputManager::Target::Relax);
+
+                char relaxFullBuf[64];
+                snprintf(relaxFullBuf, sizeof(relaxFullBuf), "Relax (Key: %s)", displayRelaxKey.c_str());
+
+                if (useLargeFont) ImGui::PushFont(fonts[32]);
+                float relaxTextWidth = ImGui::CalcTextSize(relaxFullBuf).x;
+                if (useLargeFont) ImGui::PopFont();
+
+                float relaxTotalWidth = relaxTextWidth + ImGui::GetStyle().ItemSpacing.x + 45.0f;
+                relaxPixelPos.x -= (relaxTotalWidth * 0.5f);
+                relaxPixelPos.y -= 16.0f;
+
+                if (useLargeFont) ImGui::PushFont(fonts[32]);
+                ImGui::SetCursorScreenPos(relaxPixelPos);
+
+                ImVec4 relaxColor = ImVec4(34.0f / 255.0f, 90.0f / 255.0f, 8.0f / 255.0f, 1.0f);
+                ImGui::TextColored(relaxColor, "Relax (Key: ");
+
+                ImGui::SameLine(0, 0);
+                ImVec2 relaxKeyStart = ImGui::GetCursorScreenPos();
+                ImGui::TextColored(relaxColor, "%s", displayRelaxKey.c_str());
+                ImVec2 relaxKeyEnd = ImGui::GetItemRectMax();
+
+                ImGui::GetWindowDrawList()->AddLine(
+                    ImVec2(relaxKeyStart.x, relaxKeyEnd.y - 1.0f),
+                    ImVec2(relaxKeyEnd.x, relaxKeyEnd.y - 1.0f),
+                    ImGui::GetColorU32(relaxColor), 2.0f
+                );
+
+                ImGui::SameLine(0, 0);
+                ImGui::TextColored(relaxColor, ")");
+
+                ImGui::SameLine();
+                ImVec2 relaxBtnPos = ImGui::GetCursorScreenPos();
+                relaxBtnPos.y += (32.0f - 22.0f) * 0.5f;
+
+                if (useLargeFont) ImGui::PopFont();
+
+                if (useBtnFont) ImGui::PushFont(fonts[16]);
+                ImGui::SetCursorScreenPos(relaxBtnPos);
+
+                if (isRelaxBinding) {
+                    ImGui::BeginDisabled();
+                    ImGui::Button("...##1", ImVec2(45, 0));
+                    ImGui::EndDisabled();
+                }
+                else {
+                    if (isFocusBinding) ImGui::BeginDisabled();
+                    if (ImGui::Button("Set##1", ImVec2(45, 0))) {
+                        inputMgr.StartBinding(InputManager::Target::Relax); // Tell manager to start listening
+                    }
+                    if (isFocusBinding) ImGui::EndDisabled();
+                }
+                if (useBtnFont) ImGui::PopFont();
+
+                // 3. Restore the cursor layout tracking state safely
+                ImGui::SetCursorPos(backupCursorPos);
                 ImPlot::EndPlot();
             }
             ImGui::EndTabItem();
@@ -538,8 +671,7 @@ void UIManager::RenderUI() {
             ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
             // Calculate widths BEFORE initializing columns to keep layout boundaries stable
-            float totalWidth = ImGui::GetContentRegionAvail().x;
-            float leftColumnWidth = totalWidth * 0.60f;
+            float leftColumnWidth = ImGui::GetContentRegionAvail().x * 0.60f;
 
             // Initialize 2-Column Layout
             ImGui::Columns(2, "ImpedanceColumns", false);
@@ -609,7 +741,6 @@ void UIManager::RenderUI() {
             // ===================================
             // COLUMN 2: IMPEDANCE VALUE LIST
             // ===================================
-            // CHANGED: Set height to 0 here as well to match the left column
             ImGui::BeginChild("ImpedanceListPanel", ImVec2(0, 0), true);
             ImGui::Text("Electrode Status");
             ImGui::Separator();
@@ -617,19 +748,53 @@ void UIManager::RenderUI() {
 
             const char* chanNames[5] = { "1", "2", "3", "4", "REF" };
             for (int i = 0; i < 5; i++) {
-                // Determine color based on impedance
-                ImU32 col = IM_COL32(255, 0, 0, 255); // Default Red
-                if (impedanceValues[i] <= 20)      col = IM_COL32(34, 90, 8, 255);
-                else if (impedanceValues[i] <= 50) col = IM_COL32(0, 255, 0, 255);
-                else if (impedanceValues[i] <= 100)col = IM_COL32(255, 255, 0, 255);
-                else if (impedanceValues[i] <= 200)col = IM_COL32(255, 165, 0, 255);
 
-                // Draw circle indicator
+                // 1. Check if the current channel is active
+                bool isChannelOn = true;
+                if (i < 4) {
+                    // Unique hidden labels (##) keep the text invisible but functional
+                    char checkLabel[32];
+                    snprintf(checkLabel, sizeof(checkLabel), "##impedance_toggle_%d", i);
+
+                    ImGui::Checkbox(checkLabel, &eegChannels[i]);
+                    isChannelOn = eegChannels[i];
+                    ImGui::SameLine();
+                }
+                else {
+                    // Padding block for REF so its text and circle align perfectly with channels 1-4
+                    float checkWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x;
+                    ImGui::Dummy(ImVec2(checkWidth, 0));
+                    ImGui::SameLine();
+                }
+
+                // 2. Determine circle color based on ON/OFF state and impedance values
+                ImU32 col;
+                if (!isChannelOn) {
+                    col = IM_COL32(128, 128, 128, 255); // Neutral Gray for deactivated channels
+                }
+                else {
+                    col = IM_COL32(255, 0, 0, 255); // Default Red
+                    if (impedanceValues[i] <= 20)      col = IM_COL32(34, 90, 8, 255);
+                    else if (impedanceValues[i] <= 50) col = IM_COL32(0, 255, 0, 255);
+                    else if (impedanceValues[i] <= 100)col = IM_COL32(255, 255, 0, 255);
+                    else if (impedanceValues[i] <= 200)col = IM_COL32(255, 165, 0, 255);
+                }
+
+                // 3. Draw circle indicator centered vertically with the text line
                 ImVec2 p = ImGui::GetCursorScreenPos();
-                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 10, p.y + 10), 8.0f, col);
+                float verticalCenter = ImGui::GetFrameHeight() * 0.5f;
+                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 10, p.y + verticalCenter), 8.0f, col);
 
                 ImGui::SetCursorScreenPos(ImVec2(p.x + 30, p.y));
-                ImGui::Text("Channel %s: %.1f kΩ", chanNames[i], impedanceValues[i]);
+
+                // 4. Update the label conditionally
+                if (!isChannelOn) {
+                    ImGui::Text("Channel %s: OFF", chanNames[i]);
+                }
+                else {
+                    ImGui::Text("Channel %s: %.1f kΩ", chanNames[i], impedanceValues[i]);
+                }
+
                 ImGui::Spacing(); ImGui::Spacing();
             }
             ImGui::EndChild();
@@ -678,7 +843,6 @@ void UIManager::RenderUI() {
                     if (pushPanelsToFront) {
                         ImGui::SetWindowFocus();
                     }
-
                     if (!ImGui::IsWindowCollapsed()) {
 
                         float currentWidth = ImGui::GetWindowWidth();
@@ -688,12 +852,55 @@ void UIManager::RenderUI() {
                         if (fontScale > 2.0f) fontScale = 2.0f;
                         ImGui::SetWindowFontScale(fontScale);
 
-                        // Title Text
-                        ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Component Node: %d", targetObj->id);
-                        ImGui::Separator();
-                        ImGui::Spacing();
+                        // ==================================================
+                        // 1. LIVE HARDWARE CONTROL & IMPEDANCE MAPPING (FIRST)
+                        // ==================================================
+                        // Map the 3D model node names to their corresponding array indices
+                        int chanIdx = -1;
+                        if (targetObj->name == "Fp1")      chanIdx = 0;
+                        else if (targetObj->name == "Fp2") chanIdx = 1;
+                        else if (targetObj->name == "T3")  chanIdx = 2;
+                        else if (targetObj->name == "T4")  chanIdx = 3;
 
-                        // IMAGE RATIO PRESERVATION
+                        if (chanIdx != -1) {
+                            // 1. Interactive Checkbox (Synced with all other windows)
+                            char checkId[64];
+                            snprintf(checkId, sizeof(checkId), "##float_check_%d", chanIdx);
+                            ImGui::Checkbox(checkId, &eegChannels[chanIdx]);
+
+                            ImGui::SameLine();
+                            ImGui::Text("|");
+                            ImGui::SameLine();
+
+                            // 2. Conditional Impedance Status Text & Color Matching
+                            if (!eegChannels[chanIdx]) {
+                                // Channel is deactivated
+                                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Status: OFF");
+                            }
+                            else {
+                                // Channel is active, match the exact color spectrum from your list panel
+                                float imp = impedanceValues[chanIdx];
+                                ImVec4 statusColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Default Red
+
+                                if (imp <= 20)       statusColor = ImVec4(34.0f / 255.0f, 90.0f / 255.0f, 8.0f / 255.0f, 1.0f);
+                                else if (imp <= 50)  statusColor = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
+                                else if (imp <= 100) statusColor = ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
+                                else if (imp <= 200) statusColor = ImVec4(1.0f, 165.0f / 255.0f, 0.0f, 1.0f);
+
+                                ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Impedance:");
+                                ImGui::SameLine();
+                                ImGui::TextColored(statusColor, "%.1f kΩ", imp);
+                            }
+
+                            // Clear separator to divide the hardware row from the image below
+                            ImGui::Spacing();
+                            ImGui::Separator();
+                            ImGui::Spacing();
+                        }
+
+                        // ==================================================
+                        // 2. IMAGE RATIO PRESERVATION (SECOND)
+                        // ==================================================
                         if (targetObj->textureID != 0) {
                             // 1. Get exact available horizontal width in the user's resized panel
                             float availWidth = ImGui::GetContentRegionAvail().x;
@@ -703,11 +910,16 @@ void UIManager::RenderUI() {
                             ImVec2 dynamicDisplaySize = ImVec2(availWidth, availWidth * aspectRatio);
 
                             ImGui::Image((void*)(intptr_t)targetObj->textureID, dynamicDisplaySize);
+
+                            // Clear separator to divide the image from the description below
                             ImGui::Spacing();
                             ImGui::Separator();
                             ImGui::Spacing();
                         }
 
+                        // ==================================================
+                        // 3. DESCRIPTION (THIRD)
+                        // ==================================================
                         ImGui::TextWrapped("%s", targetObj->description.c_str());
 
                         ImGui::SetWindowFontScale(1.0f); // Reset
