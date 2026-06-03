@@ -1,6 +1,8 @@
 #include "GanglionHandler.h"
 #include <iostream>
 #include <thread>
+#include "InputManager.h"
+#include "Utils.h"
 
 GanglionHandler::GanglionHandler() : board(nullptr), concentrationModel(nullptr), connected(false) {
     currentConcentration = 0.0f;
@@ -117,6 +119,27 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
 
         // Safely extract the first element if the vector isn't empty
         double concentration = prediction.empty() ? 0.0 : prediction[0];
+
+        auto& inputMgr = InputManager::GetInstance();
+        float focusThreshold = Config::focusThreshold.load();
+        int inputModeHold = Config::inputModeHold.load();
+
+        switch (inputModeHold) {
+        case 0:
+            if (!inputMgr.IsBinding()) {
+                inputMgr.SimulatePress((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
+            }
+            break;
+
+        case 1:
+            if (!inputMgr.IsBinding()) {
+                inputMgr.SimulateHold((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
+            }
+            break;
+
+        default:
+            break;
+        }
 
         // 6. Safely store the results for the UI to read
         {

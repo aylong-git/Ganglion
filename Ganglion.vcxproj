@@ -35,30 +35,6 @@
     <ClCompile Include="src\UI\UI.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="inc\board_controller.h" />
-    <ClInclude Include="inc\board_info_getter.h" />
-    <ClInclude Include="inc\board_shim.h" />
-    <ClInclude Include="inc\brainflow_array.h" />
-    <ClInclude Include="inc\brainflow_constants.h" />
-    <ClInclude Include="inc\brainflow_exception.h" />
-    <ClInclude Include="inc\brainflow_input_params.h" />
-    <ClInclude Include="inc\brainflow_model_params.h" />
-    <ClInclude Include="inc\data_filter.h" />
-    <ClInclude Include="inc\data_handler.h" />
-    <ClInclude Include="inc\json.hpp" />
-    <ClInclude Include="inc\ml_model.h" />
-    <ClInclude Include="inc\ml_module.h" />
-    <ClInclude Include="inc\shared_export.h" />
-    <ClInclude Include="inc\stb_image.h" />
-    <ClInclude Include="inc\tiny_obj_loader.h" />
-    <ClInclude Include="src\imgui\imconfig.h" />
-    <ClInclude Include="src\imgui\imgui.h" />
-    <ClInclude Include="src\imgui\imgui_internal.h" />
-    <ClInclude Include="src\imgui\imstb_rectpack.h" />
-    <ClInclude Include="src\imgui\imstb_textedit.h" />
-    <ClInclude Include="src\imgui\imstb_truetype.h" />
-    <ClInclude Include="src\implot\implot.h" />
-    <ClInclude Include="src\implot\implot_internal.h" />
     <ClInclude Include="src\Processing\GanglionHandler.h" />
     <ClInclude Include="src\Processing\HeadObject.h" />
     <ClInclude Include="src\Processing\InputManager.h" />

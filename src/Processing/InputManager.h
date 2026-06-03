@@ -6,7 +6,6 @@ class InputManager {
 public:
     enum class Target { None = 0, Relax, Focus };
 
-    // Singleton access or standard instance reference
     static InputManager& GetInstance() {
         static InputManager instance;
         return instance;
@@ -26,14 +25,31 @@ public:
         return ImGui::GetKeyName(key);
     }
 
-    // Call this once per frame before rendering the UI
     void Update();
+
+    void ReleaseAllKey() {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddKeyEvent(m_relaxKey, false);
+        io.AddKeyEvent(m_focusKey, false);
+    }
+
+    void SimulateHold(Target target) {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMouseButtonEvent((target == Target::Focus) ? m_focusKey : m_relaxKey, true);
+        io.AddMouseButtonEvent((target == Target::Focus) ? m_relaxKey : m_focusKey, false);
+    }
+
+    void SimulatePress(Target target) {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddKeyEvent((target == Target::Focus) ? m_focusKey : m_relaxKey, true);
+        io.AddKeyEvent((target == Target::Focus) ? m_focusKey : m_relaxKey, false);
+    }
 
 private:
     InputManager() = default;
 
     Target m_bindingTarget = Target::None;
     bool m_justActivated = false;
-    ImGuiKey m_focusKey = ImGuiKey_None;
-    ImGuiKey m_relaxKey = ImGuiKey_None;
+    ImGuiKey m_focusKey = ImGuiKey_UpArrow;
+    ImGuiKey m_relaxKey = ImGuiKey_DownArrow;
 };

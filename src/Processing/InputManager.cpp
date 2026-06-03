@@ -21,3 +21,4 @@ void InputManager::Update() {
         }
     }
 }
+

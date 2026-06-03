@@ -68,8 +68,6 @@ public:
 
     // --- Control Settings (Read by main.cpp) ---
     bool eegChannels[4] = { true, true, false, false }; // Ch 1, 2, 3, 4
-    int inputModeIdx = 0;                               // 0 = Press, 1 = Hold
-    float focusThreshold = 0.75f;
     float statusRefreshTime = 0.1f;
 
     float currentConcentration = 0.0f;

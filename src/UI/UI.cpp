@@ -271,6 +271,8 @@ void UIManager::RenderUI() {
 
     float totalWidth = ImGui::GetContentRegionAvail().x;
     float totalHeight = ImGui::GetContentRegionAvail().y;
+    float focusThreshold = Config::focusThreshold.load();
+    int inputModeHold = Config::inputModeHold.load();
 
     // ==========================================
     // HEADER
@@ -404,7 +406,8 @@ void UIManager::RenderUI() {
 
     ImGui::Spacing();
     const char* inputModes[] = { "Press", "Hold" };
-    ImGui::Combo("Input Mode", &inputModeIdx, inputModes, IM_ARRAYSIZE(inputModes));
+    ImGui::Combo("Input Mode", &inputModeHold, inputModes, IM_ARRAYSIZE(inputModes));
+    Config::inputModeHold.store(inputModeHold);
 
     ImGui::Spacing();
     ImGui::SliderFloat("Refresh Time (s)", &statusRefreshTime, 0.1f, 4.0f);
@@ -431,7 +434,7 @@ void UIManager::RenderUI() {
             // Draw Status Circle
             ImVec2 p = ImGui::GetCursorScreenPos();
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            ImU32 statusColor = (currentConcentration >= focusThreshold) ? IM_COL32(34, 90, 8, 255) : IM_COL32(255, 0, 0, 255);
+            ImU32 statusColor = (currentConcentration < focusThreshold) ? IM_COL32(34, 90, 8, 255) : IM_COL32(255, 0, 0, 255);
             draw_list->AddCircleFilled(ImVec2(p.x + 20, p.y + 20), 15.0f, statusColor);
             ImGui::SetCursorScreenPos(ImVec2(p.x + 50, p.y));
             ImGui::Text("\nStatus: %s", (currentConcentration >= focusThreshold) ? "Focusing" : "Relaxing");
@@ -486,7 +489,7 @@ void UIManager::RenderUI() {
                     if (currentThresh > 0.9) currentThresh = 0.9;
 
                     // Save back to your variable
-                    focusThreshold = (float)currentThresh;
+                    Config::focusThreshold.store((float)currentThresh);
                 }
 
                 // ==========================================
@@ -582,6 +585,7 @@ void UIManager::RenderUI() {
                 else {
                     if (isRelaxBinding) ImGui::BeginDisabled();
                     if (ImGui::Button("Set##2", ImVec2(45, 0))) {
+                        inputMgr.ReleaseAllKey();
                         inputMgr.StartBinding(InputManager::Target::Focus); // Tell manager to start listening
                     }
                     if (isRelaxBinding) ImGui::EndDisabled();
@@ -645,6 +649,7 @@ void UIManager::RenderUI() {
                 else {
                     if (isFocusBinding) ImGui::BeginDisabled();
                     if (ImGui::Button("Set##1", ImVec2(45, 0))) {
+                        inputMgr.ReleaseAllKey();
                         inputMgr.StartBinding(InputManager::Target::Relax); // Tell manager to start listening
                     }
                     if (isFocusBinding) ImGui::EndDisabled();
