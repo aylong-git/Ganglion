@@ -2,6 +2,15 @@
 #include <string>
 #include <imgui.h>
 
+// --- OS-Specific Headers ---
+#if defined(_WIN32)
+#include <windows.h>
+
+#elif defined(__APPLE__)
+#include <ApplicationServices/ApplicationServices.h>
+#include <Carbon/Carbon.h>
+#endif
+
 class InputManager {
 public:
     enum class Target { None = 0, Relax, Focus };
@@ -19,6 +28,11 @@ public:
     bool IsBinding() const { return m_bindingTarget != Target::None; }
     Target GetBindingTarget() const { return m_bindingTarget; }
 
+    ImGuiKey GetKey(Target target) const {
+        ImGuiKey key = (target == Target::Focus) ? m_focusKey : m_relaxKey;
+        return key;
+    }
+
     std::string GetKeyName(Target target) const {
         ImGuiKey key = (target == Target::Focus) ? m_focusKey : m_relaxKey;
         if (key == ImGuiKey_None) return "None";
@@ -27,24 +41,6 @@ public:
 
     void Update();
 
-    void ReleaseAllKey() {
-        ImGuiIO& io = ImGui::GetIO();
-        io.AddKeyEvent(m_relaxKey, false);
-        io.AddKeyEvent(m_focusKey, false);
-    }
-
-    void SimulateHold(Target target) {
-        ImGuiIO& io = ImGui::GetIO();
-        io.AddMouseButtonEvent((target == Target::Focus) ? m_focusKey : m_relaxKey, true);
-        io.AddMouseButtonEvent((target == Target::Focus) ? m_relaxKey : m_focusKey, false);
-    }
-
-    void SimulatePress(Target target) {
-        ImGuiIO& io = ImGui::GetIO();
-        io.AddKeyEvent((target == Target::Focus) ? m_focusKey : m_relaxKey, true);
-        io.AddKeyEvent((target == Target::Focus) ? m_focusKey : m_relaxKey, false);
-    }
-
 private:
     InputManager() = default;
 
@@ -52,4 +48,44 @@ private:
     bool m_justActivated = false;
     ImGuiKey m_focusKey = ImGuiKey_UpArrow;
     ImGuiKey m_relaxKey = ImGuiKey_DownArrow;
+};
+
+
+class OSInputSimulator {
+public:
+    static void SendHardwareKey(ImGuiKey key, bool isPressed);
+
+    static void SimulatePress(InputManager::Target target) {
+        ImGuiKey key = InputManager::GetInstance().GetKey(target);
+        SendHardwareKey(key, true);
+        SendHardwareKey(key, false);
+    }
+
+    static void SimulateHold(InputManager::Target target) {
+        ImGuiKey key_focus = InputManager::GetInstance().GetKey(InputManager::Target::Focus);
+        ImGuiKey key_relax = InputManager::GetInstance().GetKey(InputManager::Target::Relax);
+        if (target == InputManager::Target::Focus) {
+            SendHardwareKey(key_focus, true);
+            SendHardwareKey(key_relax, false);
+        }
+        else {
+            SendHardwareKey(key_relax, true);
+            SendHardwareKey(key_focus, false);
+        }
+    }
+
+    static void ReleaseAllKey() {
+        ImGuiKey key_focus = InputManager::GetInstance().GetKey(InputManager::Target::Focus);
+        ImGuiKey key_relax = InputManager::GetInstance().GetKey(InputManager::Target::Relax);
+        SendHardwareKey(key_focus, false);
+        SendHardwareKey(key_relax, false);
+    }
+
+private:
+    // Internal translation functions
+#if defined(_WIN32)
+    static WORD TranslateToWindowsVK(ImGuiKey key);
+#elif defined(__APPLE__)
+    static CGKeyCode TranslateToMacVK(ImGuiKey key);
+#endif
 };

@@ -127,13 +127,13 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
         switch (inputModeHold) {
         case 0:
             if (!inputMgr.IsBinding()) {
-                inputMgr.SimulatePress((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
+                OSInputSimulator::SimulatePress((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
             }
             break;
 
         case 1:
             if (!inputMgr.IsBinding()) {
-                inputMgr.SimulateHold((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
+                OSInputSimulator::SimulateHold((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
             }
             break;
 

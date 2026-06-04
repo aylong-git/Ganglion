@@ -585,7 +585,7 @@ void UIManager::RenderUI() {
                 else {
                     if (isRelaxBinding) ImGui::BeginDisabled();
                     if (ImGui::Button("Set##2", ImVec2(45, 0))) {
-                        inputMgr.ReleaseAllKey();
+                        OSInputSimulator::ReleaseAllKey();
                         inputMgr.StartBinding(InputManager::Target::Focus); // Tell manager to start listening
                     }
                     if (isRelaxBinding) ImGui::EndDisabled();
@@ -649,7 +649,7 @@ void UIManager::RenderUI() {
                 else {
                     if (isFocusBinding) ImGui::BeginDisabled();
                     if (ImGui::Button("Set##1", ImVec2(45, 0))) {
-                        inputMgr.ReleaseAllKey();
+                        OSInputSimulator::ReleaseAllKey();
                         inputMgr.StartBinding(InputManager::Target::Relax); // Tell manager to start listening
                     }
                     if (isFocusBinding) ImGui::EndDisabled();
