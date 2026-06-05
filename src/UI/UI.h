@@ -1,16 +1,11 @@
 #pragma once
-
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
-#include <GLFW/glfw3.h>
 #include <map>
 #include <atomic>
-#include <iostream>
 #include <string>
 #include <vector>
 #include <cmath>
-
+#include <array>
+#include <GLFW/glfw3.h>
 #include "HeadObject.h"
 
 struct ScrollingBuffer {
@@ -81,7 +76,9 @@ public:
 
     // --- Impedance Tab State ---
     bool isCheckingImpedance = false;
-    float impedanceValues[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    std::array<float, 5> CurrentImpedances = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    bool reqImpedanceCheck = false;
+    bool reqStopImpedanceCheck = false;
 
 private:
     GLFWwindow* window;

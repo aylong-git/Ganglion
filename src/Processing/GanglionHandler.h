@@ -6,7 +6,6 @@
 #include <mutex>
 
 #include "board_shim.h"
-#include "data_filter.h"
 #include "ml_model.h"
 
 class GanglionHandler {
@@ -19,17 +18,23 @@ public:
     void Disconnect();
     bool IsConnected() const;
 
-    // The main processing loop (Gets data, filters, runs ML)
     void ProcessData(const std::vector<int>& activeChannels);
-
-    // Thread-safe Getters for the UI
     float GetConcentration();
     std::vector<double> GetBandPowers();
 
+    bool StartImpedanceMode(const std::string& port, const std::string& macAddress);
+    void StopImpedanceMode();
+    bool IsImpedanceMode() const;
+
+    void UpdateImpedanceData();
+    std::vector<float> GetLatestImpedance();
+
 private:
-    BoardShim* board;
-    MLModel* concentrationModel;
-    std::atomic<bool> connected;
+    BoardShim* board = nullptr;
+    MLModel* concentrationModel = nullptr;
+    std::atomic<bool> connected = false;
+
+    std::atomic<bool> impedanceMode = false;
 
     int samplingRate;
     int boardId;
@@ -37,5 +42,6 @@ private:
     // Thread-safety locks and shared data
     std::mutex dataMutex;
     float currentConcentration;
+    std::vector<float> CurrentImpedances = { 0.0, 0.0, 0.0, 0.0, 0.0 };
     std::vector<double> currentBandPowers; // Delta, Theta, Alpha, Beta, Gamma
 };

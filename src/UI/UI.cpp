@@ -1,17 +1,21 @@
-#include <glad/glad.h>
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #else
 #include <filesystem>
 namespace fs = std::filesystem;
 #endif
+
+#include <glad/glad.h>
 #include <setupapi.h>
 #include <devguid.h>
 #include "UI.h"
 #include "implot.h"
 #include "Utils.h"
 #include "InputManager.h"
-#include <cctype>
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include <iostream>
 
 #pragma comment(lib, "setupapi.lib")
 
@@ -391,9 +395,12 @@ void UIManager::RenderUI() {
         }
     }
     else {
+        ImGui::BeginDisabled(isCheckingImpedance);
         if (ImGui::Button("Connect", ImVec2(-1, 40))) {
             reqConnect = true;
         }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && isCheckingImpedance) ImGui::SetTooltip("Stop checking impedance first");
+        ImGui::EndDisabled();
     }
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
@@ -405,7 +412,7 @@ void UIManager::RenderUI() {
     ImGui::Checkbox("4", &eegChannels[3]);
 
     ImGui::Spacing();
-    const char* inputModes[] = { "Press", "Hold" };
+    const char* inputModes[] = { "Tap", "Hold" };
     ImGui::Combo("Input Mode", &inputModeHold, inputModes, IM_ARRAYSIZE(inputModes));
     Config::inputModeHold.store(inputModeHold);
 
@@ -669,10 +676,20 @@ void UIManager::RenderUI() {
         if (ImGui::BeginTabItem("Impedance Check")) {
             ImGui::Spacing();
 
-            // Top Control Button
-            if (ImGui::Button(isCheckingImpedance ? "Stop Checking" : "Check Impedance", ImVec2(200, 40))) {
-                isCheckingImpedance = !isCheckingImpedance;
+            if (isCheckingImpedance) {
+                if (ImGui::Button("Stop Checking", ImVec2(-1, 40))) {
+                    reqStopImpedanceCheck = true;
+                }
             }
+            else {
+                ImGui::BeginDisabled(isConnected);
+                if (ImGui::Button("Check Impedance", ImVec2(-1, 40))) {
+                    reqImpedanceCheck = true;
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && isConnected) ImGui::SetTooltip("Disconnect the board first");
+                ImGui::EndDisabled();
+            }
+
             ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
             // Calculate widths BEFORE initializing columns to keep layout boundaries stable
@@ -778,11 +795,11 @@ void UIManager::RenderUI() {
                     col = IM_COL32(128, 128, 128, 255); // Neutral Gray for deactivated channels
                 }
                 else {
-                    col = IM_COL32(255, 0, 0, 255); // Default Red
-                    if (impedanceValues[i] <= 20)      col = IM_COL32(34, 90, 8, 255);
-                    else if (impedanceValues[i] <= 50) col = IM_COL32(0, 255, 0, 255);
-                    else if (impedanceValues[i] <= 100)col = IM_COL32(255, 255, 0, 255);
-                    else if (impedanceValues[i] <= 200)col = IM_COL32(255, 165, 0, 255);
+                    col = IM_COL32(224, 56, 45, 255); // Default Red
+                    if (CurrentImpedances[i] <= 10)      col = IM_COL32(49, 113, 89, 255);
+                    else if (CurrentImpedances[i] <= 50) col = IM_COL32(184, 220, 105, 255);
+                    else if (CurrentImpedances[i] <= 100)col = IM_COL32(221, 178, 13, 255);
+                    else if (CurrentImpedances[i] <= 150)col = IM_COL32(253, 94, 52, 255);
                 }
 
                 // 3. Draw circle indicator centered vertically with the text line
@@ -797,7 +814,7 @@ void UIManager::RenderUI() {
                     ImGui::Text("Channel %s: OFF", chanNames[i]);
                 }
                 else {
-                    ImGui::Text("Channel %s: %.1f kΩ", chanNames[i], impedanceValues[i]);
+                    ImGui::Text("Channel %s: %.1f kΩ", chanNames[i], CurrentImpedances[i]);
                 }
 
                 ImGui::Spacing(); ImGui::Spacing();
@@ -866,25 +883,26 @@ void UIManager::RenderUI() {
                         else if (targetObj->name == "Fp2") chanIdx = 1;
                         else if (targetObj->name == "T3")  chanIdx = 2;
                         else if (targetObj->name == "T4")  chanIdx = 3;
+                        else if (targetObj->name == "A2")  chanIdx = 4;
 
                         if (chanIdx != -1) {
-                            // 1. Interactive Checkbox (Synced with all other windows)
-                            char checkId[64];
-                            snprintf(checkId, sizeof(checkId), "##float_check_%d", chanIdx);
-                            ImGui::Checkbox(checkId, &eegChannels[chanIdx]);
+                            if (chanIdx != 4) {
+                                // 1. Interactive Checkbox (Synced with all other windows)
 
-                            ImGui::SameLine();
-                            ImGui::Text("|");
-                            ImGui::SameLine();
+                                char checkId[64];
+                                snprintf(checkId, sizeof(checkId), "##float_check_%d", chanIdx);
+
+                                ImGui::Checkbox(checkId, &eegChannels[chanIdx]);
+                                ImGui::SameLine();
+                                ImGui::Text("|");
+                                ImGui::SameLine();
+                            }
 
                             // 2. Conditional Impedance Status Text & Color Matching
-                            if (!eegChannels[chanIdx]) {
-                                // Channel is deactivated
-                                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Status: OFF");
-                            }
-                            else {
+                            
+                            if (chanIdx == 4 || eegChannels[chanIdx]) {
                                 // Channel is active, match the exact color spectrum from your list panel
-                                float imp = impedanceValues[chanIdx];
+                                float imp = CurrentImpedances[chanIdx];
                                 ImVec4 statusColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Default Red
 
                                 if (imp <= 20)       statusColor = ImVec4(34.0f / 255.0f, 90.0f / 255.0f, 8.0f / 255.0f, 1.0f);
@@ -895,6 +913,10 @@ void UIManager::RenderUI() {
                                 ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Impedance:");
                                 ImGui::SameLine();
                                 ImGui::TextColored(statusColor, "%.1f kΩ", imp);
+                            }
+                            else {
+                                // Channel is deactivated
+                                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Status: OFF");
                             }
 
                             // Clear separator to divide the hardware row from the image below

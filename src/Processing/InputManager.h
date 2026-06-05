@@ -46,16 +46,16 @@ private:
 
     Target m_bindingTarget = Target::None;
     bool m_justActivated = false;
-    ImGuiKey m_focusKey = ImGuiKey_UpArrow;
-    ImGuiKey m_relaxKey = ImGuiKey_DownArrow;
+    ImGuiKey m_focusKey = ImGuiKey_None;
+    ImGuiKey m_relaxKey = ImGuiKey_None;
 };
 
 
 class OSInputSimulator {
 public:
-    static void SendHardwareKey(ImGuiKey key, bool isPressed);
+    static void SendHardwareKey(ImGuiKey key, bool Press);
 
-    static void SimulatePress(InputManager::Target target) {
+    static void SimulateTap(InputManager::Target target) {
         ImGuiKey key = InputManager::GetInstance().GetKey(target);
         SendHardwareKey(key, true);
         SendHardwareKey(key, false);

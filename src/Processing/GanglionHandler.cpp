@@ -1,6 +1,6 @@
 #include "GanglionHandler.h"
 #include <iostream>
-#include <thread>
+#include "data_filter.h"
 #include "InputManager.h"
 #include "Utils.h"
 
@@ -18,23 +18,36 @@ bool GanglionHandler::Connect(const std::string& port, const std::string& macAdd
 
     try {
         BoardShim::enable_dev_board_logger();
-        struct BrainFlowInputParams params;
 
-        // Convert std::string to char array for BrainFlow
-        if (!port.empty()) params.serial_port = port;
-        if (!macAddress.empty()) params.mac_address = macAddress;
+        if (board == nullptr) {
+            struct BrainFlowInputParams params;
 
-        boardId = (int)BoardIds::GANGLION_BOARD;
-        samplingRate = BoardShim::get_sampling_rate(boardId);
+            if (!port.empty()) params.serial_port = port;
+            if (!macAddress.empty()) params.mac_address = macAddress;
 
-        board = new BoardShim(boardId, params);
-        board->prepare_session();
-        board->start_stream();
+            boardId = (int)BoardIds::GANGLION_BOARD;
+            samplingRate = BoardShim::get_sampling_rate(boardId);
 
-        // Initialize ML Model
-        struct BrainFlowModelParams modelParams((int)BrainFlowMetrics::MINDFULNESS, (int)BrainFlowClassifiers::DEFAULT_CLASSIFIER);
-        concentrationModel = new MLModel(modelParams);
-        concentrationModel->prepare();
+            board = new BoardShim(boardId, params);
+        }
+
+        if (!board->is_prepared()) {
+            board->prepare_session();
+        }
+
+        if (impedanceMode) {
+            board->config_board("Z");
+            impedanceMode = false;
+        }
+        else {
+            board->start_stream();
+        }
+
+        if (concentrationModel == nullptr) {
+            struct BrainFlowModelParams modelParams((int)BrainFlowMetrics::MINDFULNESS, (int)BrainFlowClassifiers::DEFAULT_CLASSIFIER); //
+            concentrationModel = new MLModel(modelParams);
+            concentrationModel->prepare();
+        }
 
         connected = true;
         std::cout << "[BrainFlow] Connected successfully to Ganglion.\n";
@@ -127,7 +140,7 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
         switch (inputModeHold) {
         case 0:
             if (!inputMgr.IsBinding()) {
-                OSInputSimulator::SimulatePress((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
+                OSInputSimulator::SimulateTap((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
             }
             break;
 
@@ -160,6 +173,83 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
     catch (const BrainFlowException& err) {
         std::cerr << "[BrainFlow Processing Error] " << err.what() << std::endl;
     }
+}
+
+bool GanglionHandler::StartImpedanceMode(const std::string& port, const std::string& macAddress) {
+    if (board == nullptr) {
+        struct BrainFlowInputParams params;
+
+        if (!port.empty()) params.serial_port = port;
+        if (!macAddress.empty()) params.mac_address = macAddress;
+
+        boardId = (int)BoardIds::GANGLION_BOARD;
+        samplingRate = BoardShim::get_sampling_rate(boardId);
+
+        board = new BoardShim(boardId, params);
+    }
+
+    try {
+        board->prepare_session();
+        board->start_stream();
+        board->config_board("z");
+
+        std::lock_guard<std::mutex> lock(dataMutex);
+        impedanceMode = true;
+        return true;
+    }
+    catch (const BrainFlowException& err) {
+        std::cerr << "[BrainFlow] Failed to start impedance check: " << err.what() << std::endl;
+        return false;
+    }
+}
+
+void GanglionHandler::StopImpedanceMode() {
+    if (board == nullptr || !impedanceMode) return;
+
+    try {
+        board->config_board("Z");
+        board->stop_stream();
+        board->release_session();
+
+        std::lock_guard<std::mutex> lock(dataMutex);
+        impedanceMode = false;
+    }
+    catch (const BrainFlowException& err) {
+        std::cerr << "[BrainFlow] Failed to stop impedance check: " << err.what() << std::endl;
+    }
+}
+
+bool GanglionHandler::IsImpedanceMode() const {
+    return impedanceMode.load();
+}
+
+void GanglionHandler::UpdateImpedanceData() {
+    if (board == nullptr) return;
+
+    try {
+        int data_count = board->get_board_data_count();
+        if (data_count == 0) return;
+
+        BrainFlowArray<double, 2> data = board->get_current_board_data(1);
+        std::vector<int> resistance_rows = BoardShim::get_resistance_channels(boardId);
+
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+
+            for (size_t i = 0; i < resistance_rows.size() && i < CurrentImpedances.size(); ++i) {
+                int row_index = resistance_rows[i];
+                CurrentImpedances[i] = data.get_address(row_index)[0] / 2.0;
+            }
+        }
+    }
+    catch (const BrainFlowException& err) {
+        std::cerr << "[BrainFlow Impedance Fetch Error] " << err.what() << std::endl;
+    }
+}
+
+std::vector<float> GanglionHandler::GetLatestImpedance() {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    return CurrentImpedances;
 }
 
 float GanglionHandler::GetConcentration() {
