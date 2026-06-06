@@ -28,7 +28,6 @@ void UIManager::UpdateAvailablePorts() {
     // ==================================================
     // --- WINDOWS HARDWARE SETUPAPI FILTERING ---
     // ==================================================
-    // Query Windows for devices belonging to the "Ports" (COM & LPT) setup class
     HDEVINFO deviceInfoSet = SetupDiGetClassDevs(&GUID_DEVCLASS_PORTS, NULL, NULL, DIGCF_PRESENT);
     if (deviceInfoSet != INVALID_HANDLE_VALUE) {
         SP_DEVINFO_DATA deviceInfoData;
@@ -989,9 +988,9 @@ void UIManager::RenderUI() {
 
             // Setup Bar Chart Layout (Top Half)
             if (ImPlot::BeginPlot("Current Band Powers", ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.5f))) {
-                ImPlot::SetupAxes("Brainwave Type", "Log Band Power", ImPlotAxisFlags_AutoFit, ImPlotScale_Log10);
-                ImPlot::SetupAxesLimits(-0.5, 4.5, 0.1, 100, ImPlotCond_Always);
-
+                ImPlot::SetupAxes("Brainwave Type", "Band Power", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_None);
+                ImPlot::SetupAxesLimits(-0.5, 4.5, 0, 1, ImPlotCond_Always);
+                
                 // Colors for bars: blue, cyan, green, orange, red
                 ImU32 barColors[5] = {
                     IM_COL32(0,0,255,255),     // Delta (Blue)
@@ -1005,28 +1004,26 @@ void UIManager::RenderUI() {
                     if (selectedWaves[i]) {
                         double x = i;
                         double y = currentBandPowers[i];
+                        std::cout << y << " ";
 
-                        // 1. Push the target colors onto the modern ImPlot style stack
-                        // ImPlotCol_Fill changes the internal body of the bar
-                        ImPlot::PushStyleColor(i, barColors[i]);
+                        ImVec4 colorVec = ColorConvertU32ToFloat4(barColors[i]);
+                        ImPlotSpec spec;
+                        spec.FillColor = colorVec;
+                        spec.FillAlpha = 1.0f;
+                        spec.LineColor = colorVec;
+                        spec.LineWeight = 1.0f;
 
-                        // ImPlotCol_Line changes the outer stroke/border line of the bar
-                        ImPlot::PushStyleColor(i, barColors[i]);
-
-                        // 2. Render the individual bar element
-                        ImPlot::PlotBars(waves[i], &x, &y, 1, 0.5);
-
-                        // 3. Pop both style rules off the stack to clean up the pipeline
-                        ImPlot::PopStyleColor(2);
+                        ImPlot::PlotBars(waves[i], &x, &y, 1, 0.5, spec);
                     }
                 }
                 ImPlot::EndPlot();
+                std::cout << "\n";
             }
 
             // Setup Historical Line Chart (Bottom Half)
             if (ImPlot::BeginPlot("Historical Band Powers", ImVec2(-1, -1))) {
-                ImPlot::SetupAxes("Window", "Log Amplitude", ImPlotAxisFlags_AutoFit, ImPlotScale_Log10);
-                ImPlot::SetupAxesLimits(0, 50, 0.1, 100, ImPlotCond_Always);
+                ImPlot::SetupAxes("Window", "Log Amplitude", ImPlotAxisFlags_AutoFit);
+                ImPlot::SetupAxesLimits(0, 50, 0, 1, ImPlotCond_Always);
 
                 for (int i = 0; i < 5; i++) {
                     if (selectedWaves[i] && bandHistory[i].Data.size() > 0) {
@@ -1075,7 +1072,7 @@ void UIManager::RenderUI() {
     ImGui::End();
 }
 
-ImVec4 ColorConvertU32ToFloat4(ImU32 in) {
+ImVec4 UIManager::ColorConvertU32ToFloat4(ImU32 in) {
     float s = 1.0f / 255.0f;
     return ImVec4(
         ((in >> IM_COL32_R_SHIFT) & 0xFF) * s,

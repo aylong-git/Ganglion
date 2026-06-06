@@ -44,8 +44,9 @@ public:
     bool Initialize();
     void Run(std::atomic<bool>& isRunning);
     void Cleanup();
+    ImVec4 ColorConvertU32ToFloat4(ImU32 in);
 
-    // --- Connection Triggers and State ---
+    // Connection Panel
     char macParts[6][3] = { "", "", "", "", "", "" };
     char macAddress[18] = "";
     unsigned int macHelpTextureID = 0;
@@ -57,24 +58,24 @@ public:
     bool showPortErrorPopup = false;
     std::string portErrorMessage = "";
 
-    // Asynchronous flags to signal main.cpp when buttons are clicked
+    // Asynchronous flags
     bool reqConnect = false;
     bool reqDisconnect = false;
 
-    // --- Control Settings (Read by main.cpp) ---
-    bool eegChannels[4] = { true, true, false, false }; // Ch 1, 2, 3, 4
+    // Control Settings
+    bool eegChannels[4] = { true, true, false, false };
     float statusRefreshTime = 0.1f;
 
     float currentConcentration = 0.0f;
     double xRange = 2.0;
     ScrollingBuffer concentrationHistory{ static_cast<int>(std::round(200.0f * xRange)) };
 
-    // --- Band Power Arrays (Written by main.cpp) ---
+    // Band Power Arrays
     bool selectedWaves[5] = { true, true, true, true, true };
     float currentBandPowers[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     ScrollingBuffer bandHistory[5];
 
-    // --- Impedance Tab State ---
+    // Impedance Tab
     bool isCheckingImpedance = false;
     std::array<float, 5> CurrentImpedances = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     bool reqImpedanceCheck = false;

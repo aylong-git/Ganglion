@@ -41,7 +41,7 @@ private:
 
     // Thread-safety locks and shared data
     std::mutex dataMutex;
-    float currentConcentration;
-    std::vector<float> CurrentImpedances = { 0.0, 0.0, 0.0, 0.0, 0.0 };
-    std::vector<double> currentBandPowers; // Delta, Theta, Alpha, Beta, Gamma
+    float currentConcentration = 0.0f;
+    std::vector<float> CurrentImpedances = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    std::vector<double> currentBandPowers = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f }; // Delta, Theta, Alpha, Beta, Gamma
 };
