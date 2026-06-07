@@ -84,7 +84,6 @@ int main() {
                 std::vector<double> bands = ganglionBoard.GetBandPowers();
                 for (int i = 0; i < 5; i++) {
                     uiManager.currentBandPowers[i] = bands[i];
-                    uiManager.bandHistory[i].AddPoint((float)bands[i]);
                 }
             }
 

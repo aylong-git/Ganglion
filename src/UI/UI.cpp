@@ -1020,18 +1020,6 @@ void UIManager::RenderUI() {
                 std::cout << "\n";
             }
 
-            // Setup Historical Line Chart (Bottom Half)
-            if (ImPlot::BeginPlot("Historical Band Powers", ImVec2(-1, -1))) {
-                ImPlot::SetupAxes("Window", "Log Amplitude", ImPlotAxisFlags_AutoFit);
-                ImPlot::SetupAxesLimits(0, 50, 0, 1, ImPlotCond_Always);
-
-                for (int i = 0; i < 5; i++) {
-                    if (selectedWaves[i] && bandHistory[i].Data.size() > 0) {
-                        ImPlot::PlotLine(waves[i], &bandHistory[i].Data[0], bandHistory[i].Data.size());
-                    }
-                }
-                ImPlot::EndPlot();
-            }
             ImGui::EndTabItem();
         }
 

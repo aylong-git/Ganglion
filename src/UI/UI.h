@@ -73,7 +73,6 @@ public:
     // Band Power Arrays
     bool selectedWaves[5] = { true, true, true, true, true };
     float currentBandPowers[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-    ScrollingBuffer bandHistory[5];
 
     // Impedance Tab
     bool isCheckingImpedance = false;
