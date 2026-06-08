@@ -76,7 +76,7 @@ public:
 
     // Impedance Tab
     bool isCheckingImpedance = false;
-    std::array<float, 5> CurrentImpedances = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    std::array<float, 5> currentImpedances = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     bool reqImpedanceCheck = false;
     bool reqStopImpedanceCheck = false;
 

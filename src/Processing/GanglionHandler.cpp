@@ -3,8 +3,9 @@
 #include "data_filter.h"
 #include "InputManager.h"
 #include "Utils.h"
+#include <algorithm>
 
-GanglionHandler::GanglionHandler() : board(nullptr), concentrationModel(nullptr), connected(false) {
+GanglionHandler::GanglionHandler() : board(nullptr), connected(false) {
     currentConcentration = 0.0f;
     currentBandPowers = { 0.0, 0.0, 0.0, 0.0, 0.0 };
 }
@@ -35,23 +36,13 @@ bool GanglionHandler::Connect(const std::string& port, const std::string& macAdd
             board->prepare_session();
         }
 
-        if (impedanceMode) {
-            board->config_board("Z");
-            impedanceMode = false;
-        }
-        else {
-            board->start_stream();
-        }
-
-        if (concentrationModel == nullptr) {
-            struct BrainFlowModelParams modelParams((int)BrainFlowMetrics::MINDFULNESS, (int)BrainFlowClassifiers::DEFAULT_CLASSIFIER); //
-            concentrationModel = new MLModel(modelParams);
-            concentrationModel->prepare();
-        }
-
+        board->start_stream(450000, "file://Raw_EEG_Session.csv:w");
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        board->get_board_data();
         connected = true;
         std::cout << "[BrainFlow] Connected successfully to Ganglion.\n";
         return true;
+
     }
     catch (const BrainFlowException& err) {
         std::cerr << "[BrainFlow Error] " << err.what() << std::endl;
@@ -71,13 +62,6 @@ void GanglionHandler::Disconnect() {
         catch (...) {}
         delete board;
         board = nullptr;
-    }
-
-    if (concentrationModel != nullptr) {
-        try { concentrationModel->release(); }
-        catch (...) {}
-        delete concentrationModel;
-        concentrationModel = nullptr;
     }
 
     connected = false;
@@ -110,6 +94,7 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
         // 3. Apply filters to selected channels
         for (int row : eegRows) {
             // BrainFlowArray provides .get_address(row) to extract the raw pointer for the filters
+            DataFilter::detrend(data.get_address(row), numSamples, (int)DetrendOperations::LINEAR);
             DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 48.0, 52.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
             DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 58.0, 62.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
             DataFilter::perform_bandpass(data.get_address(row), numSamples, samplingRate, 5.0, 15.0, 4, (int)FilterTypes::BESSEL, 0);
@@ -119,34 +104,34 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
         // BrainFlow returns a pair of raw double arrays (size 5 each: Delta, Theta, Alpha, Beta, Gamma)
         std::pair<double*, double*> bands = DataFilter::get_avg_band_powers(data, eegRows, samplingRate, true);
 
-        // Combine them into a continuous feature vector for the ML model (5 averages + 5 stddevs = 10 elements)
-        std::vector<double> feature_vector(10);
-        for (int i = 0; i < 5; i++) {
-            feature_vector[i] = bands.first[i];       // 0-4: Averages
-            feature_vector[i + 5] = bands.second[i];  // 5-9: Standard Deviations
-        }
+        // Extract Theta and Beta
+        double theta = bands.first[1];
+        double beta = bands.first[3];
+        double rawTBRatio = (beta > 0) ? (theta / beta) : 0.0;
 
-        // 5. Run the ML Prediction
-        // Capture the returned std::vector<double> from the model
-        std::vector<double> prediction = concentrationModel->predict(feature_vector.data(), (int)feature_vector.size());
+        double minRatio = 0.3;
+        double maxRatio = 2.5;
 
-        // Safely extract the first element if the vector isn't empty
-        double concentration = prediction.empty() ? 0.0 : prediction[0];
+        double TBRatio = (rawTBRatio - minRatio) / (maxRatio - minRatio);
+        TBRatio = std::clamp(TBRatio, 0.0, 1.0);
+        double concentrationIndex = 1.0 - TBRatio;
 
         auto& inputMgr = InputManager::GetInstance();
         float focusThreshold = Config::focusThreshold.load();
         int inputModeHold = Config::inputModeHold.load();
 
+        InputManager::Target State = (concentrationIndex >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax;
+
         switch (inputModeHold) {
         case 0:
             if (!inputMgr.IsBinding()) {
-                OSInputSimulator::SimulateTap((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
+                OSInputSimulator::SimulateTap(State);
             }
             break;
 
         case 1:
             if (!inputMgr.IsBinding()) {
-                OSInputSimulator::SimulateHold((concentration >= focusThreshold) ? InputManager::Target::Focus : InputManager::Target::Relax);
+                OSInputSimulator::SimulateHold(State);
             }
             break;
 
@@ -157,10 +142,10 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
         // 6. Safely store the results for the UI to read
         {
             std::lock_guard<std::mutex> lock(dataMutex);
-            currentConcentration = (float)concentration;
+            currentConcentration = (float)concentrationIndex;
 
             for (int i = 0; i < 5; i++) {
-                currentBandPowers[i] = feature_vector[i];
+                currentBandPowers[i] = bands.first[i];
             }
         }
 
@@ -236,9 +221,9 @@ void GanglionHandler::UpdateImpedanceData() {
         {
             std::lock_guard<std::mutex> lock(dataMutex);
 
-            for (size_t i = 0; i < resistance_rows.size() && i < CurrentImpedances.size(); ++i) {
+            for (size_t i = 0; i < resistance_rows.size() && i < currentImpedances.size(); ++i) {
                 int row_index = resistance_rows[i];
-                CurrentImpedances[i] = data.get_address(row_index)[0] / 2.0;
+                currentImpedances[i] = data.get_address(row_index)[0] / 2.0;
             }
         }
     }
@@ -249,7 +234,7 @@ void GanglionHandler::UpdateImpedanceData() {
 
 std::vector<float> GanglionHandler::GetLatestImpedance() {
     std::lock_guard<std::mutex> lock(dataMutex);
-    return CurrentImpedances;
+    return currentImpedances;
 }
 
 float GanglionHandler::GetConcentration() {

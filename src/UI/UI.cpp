@@ -795,10 +795,10 @@ void UIManager::RenderUI() {
                 }
                 else {
                     col = IM_COL32(224, 56, 45, 255); // Default Red
-                    if (CurrentImpedances[i] <= 10)      col = IM_COL32(49, 113, 89, 255);
-                    else if (CurrentImpedances[i] <= 50) col = IM_COL32(184, 220, 105, 255);
-                    else if (CurrentImpedances[i] <= 100)col = IM_COL32(221, 178, 13, 255);
-                    else if (CurrentImpedances[i] <= 150)col = IM_COL32(253, 94, 52, 255);
+                    if (currentImpedances[i] <= 10)      col = IM_COL32(49, 113, 89, 255);
+                    else if (currentImpedances[i] <= 50) col = IM_COL32(184, 220, 105, 255);
+                    else if (currentImpedances[i] <= 100)col = IM_COL32(221, 178, 13, 255);
+                    else if (currentImpedances[i] <= 150)col = IM_COL32(253, 94, 52, 255);
                 }
 
                 // 3. Draw circle indicator centered vertically with the text line
@@ -813,7 +813,7 @@ void UIManager::RenderUI() {
                     ImGui::Text("Channel %s: OFF", chanNames[i]);
                 }
                 else {
-                    ImGui::Text("Channel %s: %.1f kΩ", chanNames[i], CurrentImpedances[i]);
+                    ImGui::Text("Channel %s: %.1f kΩ", chanNames[i], currentImpedances[i]);
                 }
 
                 ImGui::Spacing(); ImGui::Spacing();
@@ -901,13 +901,13 @@ void UIManager::RenderUI() {
                             
                             if (chanIdx == 4 || eegChannels[chanIdx]) {
                                 // Channel is active, match the exact color spectrum from your list panel
-                                float imp = CurrentImpedances[chanIdx];
-                                ImVec4 statusColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Default Red
+                                float imp = currentImpedances[chanIdx];
+                                ImVec4 statusColor = ImVec4(224.0f / 255.0f, 56.0f / 255.0f, 45.0f / 255.0f, 1.0f);
 
-                                if (imp <= 20)       statusColor = ImVec4(34.0f / 255.0f, 90.0f / 255.0f, 8.0f / 255.0f, 1.0f);
-                                else if (imp <= 50)  statusColor = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
-                                else if (imp <= 100) statusColor = ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
-                                else if (imp <= 200) statusColor = ImVec4(1.0f, 165.0f / 255.0f, 0.0f, 1.0f);
+                                if (imp <= 10)       statusColor = ImVec4(49.0f / 255.0f, 113.0f / 255.0f, 89.0f / 255.0f, 1.0f);
+                                else if (imp <= 50)  statusColor = ImVec4(184.0f / 255.0f, 220.0f / 255.0f, 105.0f / 255.0f, 1.0f);
+                                else if (imp <= 100) statusColor = ImVec4(221.0f / 255.0f, 178.0f / 255.0f, 13.0f / 255.0f, 1.0f);
+                                else if (imp <= 150) statusColor = ImVec4(253.0f / 255.0f, 94.0f / 255.0f, 52.0f / 255.0f, 1.0f);
 
                                 ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Impedance:");
                                 ImGui::SameLine();
@@ -1004,7 +1004,7 @@ void UIManager::RenderUI() {
                     if (selectedWaves[i]) {
                         double x = i;
                         double y = currentBandPowers[i];
-                        std::cout << y << " ";
+                        //std::cout << y << " ";
 
                         ImVec4 colorVec = ColorConvertU32ToFloat4(barColors[i]);
                         ImPlotSpec spec;
@@ -1017,7 +1017,7 @@ void UIManager::RenderUI() {
                     }
                 }
                 ImPlot::EndPlot();
-                std::cout << "\n";
+                //std::cout << "\n";
             }
 
             ImGui::EndTabItem();

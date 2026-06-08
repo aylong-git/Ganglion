@@ -5,6 +5,8 @@
 #include "UI.h"
 #include "GanglionHandler.h"
 #include "HeadObject.h"
+#include <fstream>
+#include <chrono>
 
 int main() {
     // Initialize our two main systems
@@ -18,6 +20,11 @@ int main() {
     }
 
     std::atomic<bool> isRunning(true);
+    
+    std::ofstream focusCsv("Custom_Focus_Metrics.csv", std::ios::out | std::ios::app);
+    if (focusCsv.is_open()) {
+        focusCsv << "Timestamp(ms),Theta,Beta,FocusRatio\n";
+    }
 
     // ==========================================
     // THE BACKGROUND WORKER THREAD
@@ -78,12 +85,22 @@ int main() {
                 ganglionBoard.ProcessData(activeChannels);
 
                 // 3. Push new data back to the UI
-                uiManager.currentConcentration = ganglionBoard.GetConcentration();
-                uiManager.concentrationHistory.AddPoint(uiManager.currentConcentration);
+                float concentration = ganglionBoard.GetConcentration();
+                uiManager.currentConcentration = concentration;
+                uiManager.concentrationHistory.AddPoint(concentration);
 
                 std::vector<double> bands = ganglionBoard.GetBandPowers();
                 for (int i = 0; i < 5; i++) {
                     uiManager.currentBandPowers[i] = bands[i];
+                }
+
+                double theta = bands[1];
+                double beta = bands[3];
+
+                if (focusCsv.is_open()) {
+                    auto now = std::chrono::system_clock::now().time_since_epoch();
+                    long long timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+                    focusCsv << timestamp << "," << theta << "," << beta << "," << 1.0f - concentration << "\n";
                 }
             }
 
@@ -91,7 +108,7 @@ int main() {
                 ganglionBoard.UpdateImpedanceData();
 
                 std::vector<float> latestImps = ganglionBoard.GetLatestImpedance();
-                std::copy(latestImps.begin(), latestImps.end(), uiManager.CurrentImpedances.begin());
+                std::copy(latestImps.begin(), latestImps.end(), uiManager.currentImpedances.begin());
             }
 
             // Sleep to prevent maxing out the CPU loop
@@ -114,6 +131,10 @@ int main() {
 
     ganglionBoard.Disconnect();
     uiManager.Cleanup();
+
+    if (focusCsv.is_open()) {
+        focusCsv.close();
+    }
 
     return 0;
 }
