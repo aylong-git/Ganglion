@@ -8,7 +8,7 @@ WORD OSInputSimulator::TranslateToWindowsVK(ImGuiKey key) {
     case ImGuiKey_UpArrow: return VK_UP;       case ImGuiKey_DownArrow: return VK_DOWN;
     case ImGuiKey_LeftArrow: return VK_LEFT;   case ImGuiKey_RightArrow: return VK_RIGHT;
 
-        // --- Numbers (Top Row) ---
+        // --- Numbers ---
     case ImGuiKey_0: return '0'; case ImGuiKey_1: return '1'; case ImGuiKey_2: return '2';
     case ImGuiKey_3: return '3'; case ImGuiKey_4: return '4'; case ImGuiKey_5: return '5';
     case ImGuiKey_6: return '6'; case ImGuiKey_7: return '7'; case ImGuiKey_8: return '8';
@@ -54,15 +54,15 @@ void OSInputSimulator::SendHardwareKey(ImGuiKey key, bool isDown) {
         }
 
         SendInput(1, &input, sizeof(INPUT));
-        return; // Exit early, we are done!
+        return;
     }
 
     // --- 2. HANDLE KEYBOARD INPUTS ---
     WORD vkCode = TranslateToWindowsVK(key);
-    if (vkCode == 0) return; // Unmapped key
+    if (vkCode == 0) return;
 
     input.type = INPUT_KEYBOARD;
-    input.mi.dwFlags = 0; // Clear mouse flags just to be safe
+    input.mi.dwFlags = 0;
     input.ki.wVk = vkCode;
 
     if (!isDown) {
@@ -83,7 +83,7 @@ CGKeyCode OSInputSimulator::TranslateToMacVK(ImGuiKey key) {
     case ImGuiKey_UpArrow: return kVK_UpArrow;     case ImGuiKey_DownArrow: return kVK_DownArrow;
     case ImGuiKey_LeftArrow: return kVK_LeftArrow; case ImGuiKey_RightArrow: return kVK_RightArrow;
 
-        // --- Numbers (Top Row) ---
+        // --- Numbers ---
     case ImGuiKey_0: return kVK_ANSI_0; case ImGuiKey_1: return kVK_ANSI_1; case ImGuiKey_2: return kVK_ANSI_2;
     case ImGuiKey_3: return kVK_ANSI_3; case ImGuiKey_4: return kVK_ANSI_4; case ImGuiKey_5: return kVK_ANSI_5;
     case ImGuiKey_6: return kVK_ANSI_6; case ImGuiKey_7: return kVK_ANSI_7; case ImGuiKey_8: return kVK_ANSI_8;
@@ -139,12 +139,12 @@ void OSInputSimulator::SendHardwareKey(ImGuiKey key, bool isDown) {
         CGEventRef clickEvent = CGEventCreateMouseEvent(NULL, eventType, cursorLoc, mouseButton);
         CGEventPost(kCGHIDEventTap, clickEvent);
         CFRelease(clickEvent);
-        return; // Exit early!
+        return;
     }
 
     // --- 2. HANDLE KEYBOARD INPUTS ---
     CGKeyCode macCode = TranslateToMacVK(key);
-    if (macCode == 0xFFFF) return; // Unmapped key
+    if (macCode == 0xFFFF) return;
 
     CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
     CGEventRef event = CGEventCreateKeyboardEvent(source, macCode, isDown);

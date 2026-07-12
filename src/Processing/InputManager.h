@@ -2,7 +2,6 @@
 #include <string>
 #include <imgui.h>
 
-// --- OS-Specific Headers ---
 #if defined(_WIN32)
 #include <windows.h>
 

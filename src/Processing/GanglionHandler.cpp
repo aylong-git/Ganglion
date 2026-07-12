@@ -77,34 +77,30 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
 
     try {
         int numSamples = board->get_board_data_count();
-        if (numSamples < 300) return; // Wait until we have enough data
+        if (numSamples < 300) return;
 
-        // 1. Modern API: Returns a BrainFlowArray directly (no dataCount needed)
+        // 1. Obtain data
         BrainFlowArray<double, 2> data = board->get_current_board_data(numSamples);
-
-        // 2. Modern API: Returns a std::vector<int> directly (no dataCount needed)
         std::vector<int> allEegChannels = BoardShim::get_eeg_channels(boardId);
 
-        // Map UI channel selection (1, 2, 3, 4) to actual Ganglion EEG rows
+        // 2. Map selected channels to data acquisition
         std::vector<int> eegRows;
         for (int ch : activeChannels) {
-            eegRows.push_back(allEegChannels[ch - 1]); // Convert 1-based UI to 0-based index
+            eegRows.push_back(allEegChannels[ch - 1]);
         }
 
-        // 3. Apply filters to selected channels
+        // 3. Apply filters
         for (int row : eegRows) {
-            // BrainFlowArray provides .get_address(row) to extract the raw pointer for the filters
             DataFilter::detrend(data.get_address(row), numSamples, (int)DetrendOperations::LINEAR);
             DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 48.0, 52.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
             DataFilter::perform_bandstop(data.get_address(row), numSamples, samplingRate, 58.0, 62.0, 4, (int)FilterTypes::BUTTERWORTH, 0);
             DataFilter::perform_bandpass(data.get_address(row), numSamples, samplingRate, 5.0, 15.0, 4, (int)FilterTypes::BESSEL, 0);
         }
 
-        // 4. Calculate Band Powers
-        // BrainFlow returns a pair of raw double arrays (size 5 each: Delta, Theta, Alpha, Beta, Gamma)
+        // 4. Calculate Band Powers (size 5 each: Delta, Theta, Alpha, Beta, Gamma)
         std::pair<double*, double*> bands = DataFilter::get_avg_band_powers(data, eegRows, samplingRate, true);
 
-        // Extract Theta and Beta
+        // Extract Theta and Beta to calculate TBRatio
         double theta = bands.first[1];
         double beta = bands.first[3];
         double rawTBRatio = (beta > 0) ? (theta / beta) : 0.0;
@@ -112,6 +108,7 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
         double minRatio = 0.3;
         double maxRatio = 2.5;
 
+        // Normalize TBRatio to [0, 1]
         double TBRatio = (rawTBRatio - minRatio) / (maxRatio - minRatio);
         TBRatio = std::clamp(TBRatio, 0.0, 1.0);
         double concentrationIndex = 1.0 - TBRatio;
@@ -139,7 +136,7 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
             break;
         }
 
-        // 6. Safely store the results for the UI to read
+        // 6. Store the results for the UI to read
         {
             std::lock_guard<std::mutex> lock(dataMutex);
             currentConcentration = (float)concentrationIndex;
@@ -149,9 +146,7 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels) {
             }
         }
 
-        // 7. CRITICAL CLEANUP
-        // Because get_avg_band_powers returns raw arrays allocated on the heap, 
-        // we must manually delete them to prevent severe memory leaks!
+        // 7. Cleanup
         delete[] bands.first;
         delete[] bands.second;
     }

@@ -12,23 +12,20 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-// ==========================================================
-// AUTO-SCALING SHADERS (No more clipping or drifting!)
-// ==========================================================
 const char* vertexShaderSource = R"(
     #version 330 core
     layout (location = 0) in vec3 aPos;
     layout (location = 1) in vec3 aNormal;
     layout (location = 2) in vec2 aTexCoord;
     layout (location = 3) in vec3 aColor; 
-    layout (location = 4) in float aObjectID; // FIXED: Declare the incoming Object ID!
+    layout (location = 4) in float aObjectID;
     
     uniform vec2 uRotation;
 
     out vec2 TexCoord;
     out vec3 Normal;
     out vec3 VertexColor; 
-    out float ObjectID; // FIXED: Declare the outgoing Object ID to the fragment shader!
+    out float ObjectID;
     
     void main() {
         float cx = cos(radians(uRotation.x)), sx = sin(radians(uRotation.x));
@@ -65,7 +62,7 @@ const char* fragmentShaderSource = R"(
     out vec4 FragColor;
     
     uniform sampler2D texture1; 
-    uniform float uSelectedObjectID; // FIXED: Declare the uniform from C++!
+    uniform float uSelectedObjectID;
     
     void main() {
         vec3 norm = normalize(Normal);
@@ -80,7 +77,7 @@ const char* fragmentShaderSource = R"(
         vec4 texColor = texture(texture1, TexCoord);
         vec3 finalColor = VertexColor * texColor.rgb * totalLighting;
 
-        // VISUAL FEEDBACK
+        // Visual feedback for selected object
         if (abs(ObjectID - uSelectedObjectID) < 0.1) {
             finalColor = mix(finalColor, vec3(0.0, 0.4, 1.0), 0.4); 
         }
@@ -248,7 +245,7 @@ void HeadObject::InitModel(const std::string& objFilePath, const std::string& mt
                 my3DHead.vertices.push_back(tx);
                 my3DHead.vertices.push_back(ty);
 
-                // Color (3) - NEW! Push the material color into the GPU data
+                // Color (3) - Push the material color into the GPU data
                 my3DHead.vertices.push_back(r);
                 my3DHead.vertices.push_back(g);
                 my3DHead.vertices.push_back(b);
@@ -267,7 +264,7 @@ void HeadObject::InitModel(const std::string& objFilePath, const std::string& mt
     }
 
     // ==========================================================
-    // TEXTURE FALLBACK (Now much simpler!)
+    // TEXTURE FALLBACK
     // ==========================================================
     glGenTextures(1, &my3DHead.modelTextureID);
     glBindTexture(GL_TEXTURE_2D, my3DHead.modelTextureID);
@@ -300,7 +297,7 @@ void HeadObject::InitModel(const std::string& objFilePath, const std::string& mt
     SetupShaders();
 
     // ==========================================================
-    // VBO / VAO SETUP (Now updated for 12 floats per vertex!)
+    // VBO / VAO SETUP
     // ==========================================================
     glGenVertexArrays(1, &my3DHead.vaoID);
     glGenBuffers(1, &my3DHead.vboID);

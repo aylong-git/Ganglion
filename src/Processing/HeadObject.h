@@ -3,7 +3,6 @@
 #include <string>
 #include "imgui.h"
 
-// A structure to hold everything related to our 3D Head
 struct HeadModelData {
     bool isLoaded = false;
     std::vector<float> vertices;
@@ -14,8 +13,6 @@ struct HeadModelData {
     unsigned int renderTextureID = 0;
     unsigned int rboID = 0;
     unsigned int shaderProgram = 0;
-
-    // NEW: The ID for your loaded skin texture!
     unsigned int modelTextureID = 0;
 
     int fboWidth = 0;

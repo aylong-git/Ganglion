@@ -50,6 +50,8 @@ public:
     char macParts[6][3] = { "", "", "", "", "", "" };
     char macAddress[18] = "";
     unsigned int macHelpTextureID = 0;
+    unsigned int focusMeterTextureID = 0;
+    unsigned int concentrationLevelTextureID = 0;
     int selectedPortIdx = 0;
     std::vector<std::string> availablePorts;
     bool isConnected = false;

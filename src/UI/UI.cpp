@@ -208,6 +208,8 @@ bool UIManager::Initialize() {
 
     headObject.InitModel("../assets/head_object.obj", "../assets");
     macHelpTextureID = LoadComponentTexture("../assets/mac_help.jpeg");
+    focusMeterTextureID = LoadComponentTexture("../assets/focus_meter.png");
+    concentrationLevelTextureID = LoadComponentTexture("../assets/concentration_level.png");
 
     return true;
 }
@@ -429,12 +431,14 @@ void UIManager::RenderUI() {
     if (ImGui::BeginTabBar("DataTabs")) {
 
         // ------------------------------------------
-        // TAB 1: CONTROL (Concentration Status)
-        // ------------------------------------------
+// TAB 1: CONTROL (Concentration Status)
+// ------------------------------------------
         if (ImGui::BeginTabItem("Control")) {
             ImGui::Spacing();
 
-            // Centered Status Display
+            // ==========================================
+            // 1. TOP HEADER: Centered Status Display 
+            // ==========================================
             ImGui::Text("Concentration Level: %.2f", currentConcentration);
 
             // Draw Status Circle
@@ -446,227 +450,283 @@ void UIManager::RenderUI() {
             ImGui::Text("\nStatus: %s", (currentConcentration >= focusThreshold) ? "Focusing" : "Relaxing");
             ImGui::Spacing(); ImGui::Spacing();
 
-            // Concentration Line Plot
-            if (ImPlot::BeginPlot("Concentration Level", ImVec2(-1, -1))) {
-                // 1. Change the axis label to "Time (s)" and lock it completely
-                ImPlot::SetupAxes("Time (s)", "Concentration Level", ImPlotAxisFlags_Lock, ImPlotAxisFlags_Lock);
+            // ==========================================
+            // 2. NESTED TABS FOR VISUALIZATION CHOICE
+            // ==========================================
+            if (ImGui::BeginTabBar("ControlVisualsTabBar")) {
 
-                double xMax = (concentrationHistory.TotalPoints < (SAMPLING_RATE * xRange)) ? SAMPLING_RATE * xRange : (double)concentrationHistory.TotalPoints;
-                double xMin = (xMax < SAMPLING_RATE * xRange) ? 0.0 : xMax - (SAMPLING_RATE * xRange);
-                xMax = xMax / SAMPLING_RATE;
-                xMin = xMin / SAMPLING_RATE;
+                // ------------------------------------------
+                // SUB-TAB A: METER VIEW (Default)
+                // ------------------------------------------
+                if (ImGui::BeginTabItem("Meter View")) {
+                    ImGui::Spacing(); ImGui::Spacing();
 
-                ImPlot::SetupAxesLimits(xMin, xMax, 0.0, 1.0, ImPlotCond_Always);
+                    // Make sure meterTextureID exists and is loaded!
+                    if (focusMeterTextureID != 0) {
+                        // PHYSICS SMOOTHING: Needle doesn't jump violently
+                        static float smoothedFocusDisplay = 0.0f;
+                        smoothedFocusDisplay += (currentConcentration - smoothedFocusDisplay) * 0.05f;
 
-                // 2. Unpack and convert sample indices to static timestamps
-                int currentSize = (int)concentrationHistory.Data.size();
-                if (currentSize > 0) {
-                    std::vector<double> histX(currentSize);
-                    std::vector<double> histY(currentSize);
+                        float meter_image_ratio = 1539.0f / 3552.0f;
+                        ImVec2 availSpace = ImGui::GetContentRegionAvail();
+                        float targetWidth = availSpace.x * 0.90f;
+                        float targetHeight = targetWidth * meter_image_ratio;
+                        ImVec2 meterSize = ImVec2(targetWidth, targetHeight);
+                        ImGui::SetCursorPosX((availSpace.x - meterSize.x) * 0.5f);
 
-                    double x0 = (double)(concentrationHistory.TotalPoints - currentSize);
+                        // Get starting position of the image on the screen
+                        ImVec2 imgPos = ImGui::GetCursorScreenPos();
 
-                    for (int i = 0; i < currentSize; ++i) {
-                        // Unwraps the ring buffer starting from the oldest point
-                        int ringIdx = (concentrationHistory.Offset + i) % currentSize;
+                        // 1. Draw the Background PNG
+                        ImGui::Image((void*)(intptr_t)focusMeterTextureID, meterSize);
 
-                        histX[i] = (x0 + i) / SAMPLING_RATE;
-                        histY[i] = (double)concentrationHistory.Data[ringIdx];
+                        float pivotRatioX = 632.0f / 1283.0f;
+                        float meterRatioBottom = 481.0f / 484.0f;
+                        ImVec2 pivot = ImVec2(imgPos.x + (meterSize.x * pivotRatioX), imgPos.y + (meterSize.y * meterRatioBottom));
+
+                        // 3. Trigonometry: Calculate needle angle and tip position
+                        const float PI = 3.1415926535f;
+                        // Angle maps from PI (Left/0.0) to 2*PI (Right/1.0)
+                        float needleAngle = PI + (smoothedFocusDisplay * PI);
+                        float needleLength = meterSize.y * 0.67f; // Adjust length if it pokes outside the dial
+
+                        ImVec2 needleTip = ImVec2(
+                            pivot.x + cosf(needleAngle) * needleLength,
+                            pivot.y + sinf(needleAngle) * needleLength
+                        );
+
+                        // 4. Draw the Needle
+                        ImDrawList* fg_draw_list = ImGui::GetWindowDrawList();
+
+                        // Optional: Draw a subtle shadow behind the needle
+                        fg_draw_list->AddLine(ImVec2(pivot.x + 3, pivot.y + 3), ImVec2(needleTip.x + 3, needleTip.y + 3), IM_COL32(0, 0, 0, 80), 6.0f);
+
+                        // Draw the actual colored needle (Using dark blue to match your UI)
+                        fg_draw_list->AddLine(pivot, needleTip, IM_COL32(45, 65, 107, 255), 6.0f);
+
+                        // Draw the center pivot pin
+                        fg_draw_list->AddCircleFilled(pivot, 14.0f, IM_COL32(45, 65, 107, 255));
+                        fg_draw_list->AddCircleFilled(pivot, 6.0f, IM_COL32(200, 200, 200, 255)); // Inner highlight
+                    }
+                    else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Meter texture not loaded!");
                     }
 
-                    ImPlotSpec historySpec;
-                    historySpec.LineColor = ImVec4(0.0f, 0.5f, 1.0f, 1.0f); // Blue history line
-                    historySpec.LineWeight = 2.0f;
-
-                    ImPlot::PlotLine("Level", histX.data(), histY.data(), currentSize, historySpec);
+                    ImGui::EndTabItem();
                 }
-
-                // ==========================================
-                // 3. INTERACTIVE THRESHOLD DRAG LINE
-                // ==========================================
-                // ImPlot requires a double, so we cast your float temporarily
-                double currentThresh = (double)focusThreshold;
-
-                // DragLineY creates a horizontal line that the user can physically grab and move.
-                // It replaces both the external slider AND your old PlotLine!
-                if (ImPlot::DragLineY(1, &currentThresh, ImVec4(1.0f, 0.0f, 0.0f, 1.0f), 2.0f)) {
-                    // Clamp the line so the user cannot drag it above 0.9 or below 0.1
-                    if (currentThresh < 0.1) currentThresh = 0.1;
-                    if (currentThresh > 0.9) currentThresh = 0.9;
-
-                    // Save back to your variable
-                    Config::focusThreshold.store((float)currentThresh);
-                }
-
-                // ==========================================
-                // THRESHOLD LABEL
-                // ==========================================
-                // 1. Format the text to include the exact float value (e.g., "Threshold level = 0.50")
-
-                bool useFont = (fonts.find(20) != fonts.end());
-                if (useFont) ImGui::PushFont(fonts[20]);
-
-                char threshLabel[32];
-                snprintf(threshLabel, sizeof(threshLabel), "Threshold level = %.2f", focusThreshold);
-
-                // 2. Push Red Color
-                ImPlot::PushStyleColor(ImPlotCol_InlayText, IM_COL32(255, 0, 0, 255));
-
-                ImPlot::PlotText(threshLabel, 1.0, (double)focusThreshold, ImVec2(0, -10));
-
-                // 4. Pop the color
-                ImPlot::PopStyleColor();
-                if (useFont) ImGui::PopFont();
-
-                // ==========================================
-                // MODERN OVERLAY: INTERACTIVE ZONE LABELS
-                // ==========================================
-                // 1. Let the manager update its background states before drawing
-                InputManager::GetInstance().Update();
-
-                // Get quick references to our current states
-                auto& inputMgr = InputManager::GetInstance();
-                bool isFocusBinding = (inputMgr.GetBindingTarget() == InputManager::Target::Focus);
-                bool isRelaxBinding = (inputMgr.GetBindingTarget() == InputManager::Target::Relax);
-
-                bool useLargeFont = (fonts.find(32) != fonts.end());
-                bool useBtnFont = (fonts.find(16) != fonts.end());
-
-                double midX = (xMin + xMax) / 2.0;
-                ImVec2 backupCursorPos = ImGui::GetCursorPos();
 
                 // ------------------------------------------
-                // FOCUS OVERLAY REGION (Top-Center)
+                // SUB-TAB B: GRAPH VIEW (Your exact ImPlot code)
                 // ------------------------------------------
-                ImVec2 focusPixelPos = ImPlot::PlotToPixels(midX, 0.96);
+                if (ImGui::BeginTabItem("Graph View")) {
 
-                // Fetch the dynamic key name straight from the Manager!
-                std::string displayFocusKey = isFocusBinding ? "..." : inputMgr.GetKeyName(InputManager::Target::Focus);
+                    // Concentration Line Plot
+                    if (ImPlot::BeginPlot("Concentration Level", ImVec2(-1, -1))) {
+                        // 1. Change the axis label to "Time (s)" and lock it completely
+                        ImPlot::SetupAxes("Time (s)", "Concentration Level", ImPlotAxisFlags_Lock, ImPlotAxisFlags_Lock);
 
-                char focusFullBuf[64];
-                snprintf(focusFullBuf, sizeof(focusFullBuf), "Focus (Key: %s)", displayFocusKey.c_str());
+                        double xMax = (concentrationHistory.TotalPoints < (SAMPLING_RATE * xRange)) ? SAMPLING_RATE * xRange : (double)concentrationHistory.TotalPoints;
+                        double xMin = (xMax < SAMPLING_RATE * xRange) ? 0.0 : xMax - (SAMPLING_RATE * xRange);
+                        xMax = xMax / SAMPLING_RATE;
+                        xMin = xMin / SAMPLING_RATE;
 
-                if (useLargeFont) ImGui::PushFont(fonts[32]);
-                float focusTextWidth = ImGui::CalcTextSize(focusFullBuf).x;
-                if (useLargeFont) ImGui::PopFont();
+                        ImPlot::SetupAxesLimits(xMin, xMax, 0.0, 1.0, ImPlotCond_Always);
 
-                float focusTotalWidth = focusTextWidth + ImGui::GetStyle().ItemSpacing.x + 45.0f;
-                focusPixelPos.x -= (focusTotalWidth * 0.5f);
-                focusPixelPos.y -= 16.0f;
+                        // 2. Unpack and convert sample indices to static timestamps
+                        int currentSize = (int)concentrationHistory.Data.size();
+                        if (currentSize > 0) {
+                            std::vector<double> histX(currentSize);
+                            std::vector<double> histY(currentSize);
 
-                if (useLargeFont) ImGui::PushFont(fonts[32]);
-                ImGui::SetCursorScreenPos(focusPixelPos);
+                            double x0 = (double)(concentrationHistory.TotalPoints - currentSize);
 
-                ImVec4 focusColor = ImVec4(1.0f, 0.2f, 0.2f, 1.0f);
-                ImGui::TextColored(focusColor, "Focus (Key: ");
+                            for (int i = 0; i < currentSize; ++i) {
+                                // Unwraps the ring buffer starting from the oldest point
+                                int ringIdx = (concentrationHistory.Offset + i) % currentSize;
 
-                ImGui::SameLine(0, 0);
-                ImVec2 focusKeyStart = ImGui::GetCursorScreenPos();
-                ImGui::TextColored(focusColor, "%s", displayFocusKey.c_str());
-                ImVec2 focusKeyEnd = ImGui::GetItemRectMax();
+                                histX[i] = (x0 + i) / SAMPLING_RATE;
+                                histY[i] = (double)concentrationHistory.Data[ringIdx];
+                            }
 
-                ImGui::GetWindowDrawList()->AddLine(
-                    ImVec2(focusKeyStart.x, focusKeyEnd.y - 1.0f),
-                    ImVec2(focusKeyEnd.x, focusKeyEnd.y - 1.0f),
-                    ImGui::GetColorU32(focusColor), 2.0f
-                );
+                            ImPlotSpec historySpec;
+                            historySpec.LineColor = ImVec4(0.0f, 0.5f, 1.0f, 1.0f); // Blue history line
+                            historySpec.LineWeight = 2.0f;
 
-                ImGui::SameLine(0, 0);
-                ImGui::TextColored(focusColor, ")");
+                            ImPlot::PlotLine("Level", histX.data(), histY.data(), currentSize, historySpec);
+                        }
 
-                ImGui::SameLine();
-                ImVec2 focusBtnPos = ImGui::GetCursorScreenPos();
-                focusBtnPos.y += (32.0f - 22.0f) * 0.5f;
+                        // ==========================================
+                        // 3. INTERACTIVE THRESHOLD DRAG LINE
+                        // ==========================================
+                        double currentThresh = (double)focusThreshold;
 
-                if (useLargeFont) ImGui::PopFont();
+                        if (ImPlot::DragLineY(1, &currentThresh, ImVec4(1.0f, 0.0f, 0.0f, 1.0f), 2.0f)) {
+                            if (currentThresh < 0.1) currentThresh = 0.1;
+                            if (currentThresh > 0.9) currentThresh = 0.9;
+                            Config::focusThreshold.store((float)currentThresh);
+                        }
 
-                if (useBtnFont) ImGui::PushFont(fonts[16]);
-                ImGui::SetCursorScreenPos(focusBtnPos);
+                        // ==========================================
+                        // THRESHOLD LABEL
+                        // ==========================================
+                        bool useFont = (fonts.find(20) != fonts.end());
+                        if (useFont) ImGui::PushFont(fonts[20]);
 
-                if (isFocusBinding) {
-                    ImGui::BeginDisabled();
-                    ImGui::Button("...##2", ImVec2(45, 0));
-                    ImGui::EndDisabled();
-                }
-                else {
-                    if (isRelaxBinding) ImGui::BeginDisabled();
-                    if (ImGui::Button("Set##2", ImVec2(45, 0))) {
-                        OSInputSimulator::ReleaseAllKey();
-                        inputMgr.StartBinding(InputManager::Target::Focus); // Tell manager to start listening
+                        char threshLabel[32];
+                        snprintf(threshLabel, sizeof(threshLabel), "Threshold level = %.2f", focusThreshold);
+
+                        ImPlot::PushStyleColor(ImPlotCol_InlayText, IM_COL32(255, 0, 0, 255));
+                        ImPlot::PlotText(threshLabel, 1.0, (double)focusThreshold, ImVec2(0, -10));
+                        ImPlot::PopStyleColor();
+                        if (useFont) ImGui::PopFont();
+
+                        // ==========================================
+                        // MODERN OVERLAY: INTERACTIVE ZONE LABELS
+                        // ==========================================
+                        InputManager::GetInstance().Update();
+
+                        auto& inputMgr = InputManager::GetInstance();
+                        bool isFocusBinding = (inputMgr.GetBindingTarget() == InputManager::Target::Focus);
+                        bool isRelaxBinding = (inputMgr.GetBindingTarget() == InputManager::Target::Relax);
+
+                        bool useLargeFont = (fonts.find(32) != fonts.end());
+                        bool useBtnFont = (fonts.find(16) != fonts.end());
+
+                        double midX = (xMin + xMax) / 2.0;
+                        ImVec2 backupCursorPos = ImGui::GetCursorPos();
+
+                        // ------------------------------------------
+                        // FOCUS OVERLAY REGION (Top-Center)
+                        // ------------------------------------------
+                        ImVec2 focusPixelPos = ImPlot::PlotToPixels(midX, 0.96);
+
+                        std::string displayFocusKey = isFocusBinding ? "..." : inputMgr.GetKeyName(InputManager::Target::Focus);
+
+                        char focusFullBuf[64];
+                        snprintf(focusFullBuf, sizeof(focusFullBuf), "Focus (Key: %s)", displayFocusKey.c_str());
+
+                        if (useLargeFont) ImGui::PushFont(fonts[32]);
+                        float focusTextWidth = ImGui::CalcTextSize(focusFullBuf).x;
+                        if (useLargeFont) ImGui::PopFont();
+
+                        float focusTotalWidth = focusTextWidth + ImGui::GetStyle().ItemSpacing.x + 45.0f;
+                        focusPixelPos.x -= (focusTotalWidth * 0.5f);
+                        focusPixelPos.y -= 16.0f;
+
+                        if (useLargeFont) ImGui::PushFont(fonts[32]);
+                        ImGui::SetCursorScreenPos(focusPixelPos);
+
+                        ImVec4 focusColor = ImVec4(1.0f, 0.2f, 0.2f, 1.0f);
+                        ImGui::TextColored(focusColor, "Focus (Key: ");
+
+                        ImGui::SameLine(0, 0);
+                        ImVec2 focusKeyStart = ImGui::GetCursorScreenPos();
+                        ImGui::TextColored(focusColor, "%s", displayFocusKey.c_str());
+                        ImVec2 focusKeyEnd = ImGui::GetItemRectMax();
+
+                        ImGui::GetWindowDrawList()->AddLine(
+                            ImVec2(focusKeyStart.x, focusKeyEnd.y - 1.0f),
+                            ImVec2(focusKeyEnd.x, focusKeyEnd.y - 1.0f),
+                            ImGui::GetColorU32(focusColor), 2.0f
+                        );
+
+                        ImGui::SameLine(0, 0);
+                        ImGui::TextColored(focusColor, ")");
+
+                        ImGui::SameLine();
+                        ImVec2 focusBtnPos = ImGui::GetCursorScreenPos();
+                        focusBtnPos.y += (32.0f - 22.0f) * 0.5f;
+
+                        if (useLargeFont) ImGui::PopFont();
+
+                        if (useBtnFont) ImGui::PushFont(fonts[16]);
+                        ImGui::SetCursorScreenPos(focusBtnPos);
+
+                        if (isFocusBinding) {
+                            ImGui::BeginDisabled();
+                            ImGui::Button("...##2", ImVec2(45, 0));
+                            ImGui::EndDisabled();
+                        }
+                        else {
+                            if (isRelaxBinding) ImGui::BeginDisabled();
+                            if (ImGui::Button("Set##2", ImVec2(45, 0))) {
+                                OSInputSimulator::ReleaseAllKey();
+                                inputMgr.StartBinding(InputManager::Target::Focus);
+                            }
+                            if (isRelaxBinding) ImGui::EndDisabled();
+                        }
+                        if (useBtnFont) ImGui::PopFont();
+
+                        // ------------------------------------------
+                        // RELAX OVERLAY REGION (Bottom-Center)
+                        // ------------------------------------------
+                        ImVec2 relaxPixelPos = ImPlot::PlotToPixels(midX, 0.05);
+
+                        std::string displayRelaxKey = isRelaxBinding ? "..." : inputMgr.GetKeyName(InputManager::Target::Relax);
+
+                        char relaxFullBuf[64];
+                        snprintf(relaxFullBuf, sizeof(relaxFullBuf), "Relax (Key: %s)", displayRelaxKey.c_str());
+
+                        if (useLargeFont) ImGui::PushFont(fonts[32]);
+                        float relaxTextWidth = ImGui::CalcTextSize(relaxFullBuf).x;
+                        if (useLargeFont) ImGui::PopFont();
+
+                        float relaxTotalWidth = relaxTextWidth + ImGui::GetStyle().ItemSpacing.x + 45.0f;
+                        relaxPixelPos.x -= (relaxTotalWidth * 0.5f);
+                        relaxPixelPos.y -= 16.0f;
+
+                        if (useLargeFont) ImGui::PushFont(fonts[32]);
+                        ImGui::SetCursorScreenPos(relaxPixelPos);
+
+                        ImVec4 relaxColor = ImVec4(34.0f / 255.0f, 90.0f / 255.0f, 8.0f / 255.0f, 1.0f);
+                        ImGui::TextColored(relaxColor, "Relax (Key: ");
+
+                        ImGui::SameLine(0, 0);
+                        ImVec2 relaxKeyStart = ImGui::GetCursorScreenPos();
+                        ImGui::TextColored(relaxColor, "%s", displayRelaxKey.c_str());
+                        ImVec2 relaxKeyEnd = ImGui::GetItemRectMax();
+
+                        ImGui::GetWindowDrawList()->AddLine(
+                            ImVec2(relaxKeyStart.x, relaxKeyEnd.y - 1.0f),
+                            ImVec2(relaxKeyEnd.x, relaxKeyEnd.y - 1.0f),
+                            ImGui::GetColorU32(relaxColor), 2.0f
+                        );
+
+                        ImGui::SameLine(0, 0);
+                        ImGui::TextColored(relaxColor, ")");
+
+                        ImGui::SameLine();
+                        ImVec2 relaxBtnPos = ImGui::GetCursorScreenPos();
+                        relaxBtnPos.y += (32.0f - 22.0f) * 0.5f;
+
+                        if (useLargeFont) ImGui::PopFont();
+
+                        if (useBtnFont) ImGui::PushFont(fonts[16]);
+                        ImGui::SetCursorScreenPos(relaxBtnPos);
+
+                        if (isRelaxBinding) {
+                            ImGui::BeginDisabled();
+                            ImGui::Button("...##1", ImVec2(45, 0));
+                            ImGui::EndDisabled();
+                        }
+                        else {
+                            if (isFocusBinding) ImGui::BeginDisabled();
+                            if (ImGui::Button("Set##1", ImVec2(45, 0))) {
+                                OSInputSimulator::ReleaseAllKey();
+                                inputMgr.StartBinding(InputManager::Target::Relax);
+                            }
+                            if (isFocusBinding) ImGui::EndDisabled();
+                        }
+                        if (useBtnFont) ImGui::PopFont();
+
+                        ImGui::SetCursorPos(backupCursorPos);
+                        ImPlot::EndPlot();
                     }
-                    if (isRelaxBinding) ImGui::EndDisabled();
+                    ImGui::EndTabItem();
                 }
-                if (useBtnFont) ImGui::PopFont();
-
-
-                // ------------------------------------------
-                // RELAX OVERLAY REGION (Bottom-Center)
-                // ------------------------------------------
-                ImVec2 relaxPixelPos = ImPlot::PlotToPixels(midX, 0.05);
-
-                // Fetch the dynamic key name straight from the Manager!
-                std::string displayRelaxKey = isRelaxBinding ? "..." : inputMgr.GetKeyName(InputManager::Target::Relax);
-
-                char relaxFullBuf[64];
-                snprintf(relaxFullBuf, sizeof(relaxFullBuf), "Relax (Key: %s)", displayRelaxKey.c_str());
-
-                if (useLargeFont) ImGui::PushFont(fonts[32]);
-                float relaxTextWidth = ImGui::CalcTextSize(relaxFullBuf).x;
-                if (useLargeFont) ImGui::PopFont();
-
-                float relaxTotalWidth = relaxTextWidth + ImGui::GetStyle().ItemSpacing.x + 45.0f;
-                relaxPixelPos.x -= (relaxTotalWidth * 0.5f);
-                relaxPixelPos.y -= 16.0f;
-
-                if (useLargeFont) ImGui::PushFont(fonts[32]);
-                ImGui::SetCursorScreenPos(relaxPixelPos);
-
-                ImVec4 relaxColor = ImVec4(34.0f / 255.0f, 90.0f / 255.0f, 8.0f / 255.0f, 1.0f);
-                ImGui::TextColored(relaxColor, "Relax (Key: ");
-
-                ImGui::SameLine(0, 0);
-                ImVec2 relaxKeyStart = ImGui::GetCursorScreenPos();
-                ImGui::TextColored(relaxColor, "%s", displayRelaxKey.c_str());
-                ImVec2 relaxKeyEnd = ImGui::GetItemRectMax();
-
-                ImGui::GetWindowDrawList()->AddLine(
-                    ImVec2(relaxKeyStart.x, relaxKeyEnd.y - 1.0f),
-                    ImVec2(relaxKeyEnd.x, relaxKeyEnd.y - 1.0f),
-                    ImGui::GetColorU32(relaxColor), 2.0f
-                );
-
-                ImGui::SameLine(0, 0);
-                ImGui::TextColored(relaxColor, ")");
-
-                ImGui::SameLine();
-                ImVec2 relaxBtnPos = ImGui::GetCursorScreenPos();
-                relaxBtnPos.y += (32.0f - 22.0f) * 0.5f;
-
-                if (useLargeFont) ImGui::PopFont();
-
-                if (useBtnFont) ImGui::PushFont(fonts[16]);
-                ImGui::SetCursorScreenPos(relaxBtnPos);
-
-                if (isRelaxBinding) {
-                    ImGui::BeginDisabled();
-                    ImGui::Button("...##1", ImVec2(45, 0));
-                    ImGui::EndDisabled();
-                }
-                else {
-                    if (isFocusBinding) ImGui::BeginDisabled();
-                    if (ImGui::Button("Set##1", ImVec2(45, 0))) {
-                        OSInputSimulator::ReleaseAllKey();
-                        inputMgr.StartBinding(InputManager::Target::Relax); // Tell manager to start listening
-                    }
-                    if (isFocusBinding) ImGui::EndDisabled();
-                }
-                if (useBtnFont) ImGui::PopFont();
-
-                // 3. Restore the cursor layout tracking state safely
-                ImGui::SetCursorPos(backupCursorPos);
-                ImPlot::EndPlot();
+                ImGui::EndTabBar(); // Close TabBar
             }
-            ImGui::EndTabItem();
+            ImGui::EndTabItem(); // Close Control Tab
         }
 
         // ------------------------------------------
