@@ -161,7 +161,7 @@ bool UIManager::Initialize() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // 2. Create the Window
-    window = glfwCreateWindow(1280, 720, "BrainFlow Dashboard", nullptr, nullptr);
+    window = glfwCreateWindow(1280, 720, "Ganglion Controller", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window\n";
         glfwTerminate();
@@ -406,19 +406,9 @@ void UIManager::RenderUI() {
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
-    ImGui::Text("EEG Channels:");
-    ImGui::Checkbox("1", &eegChannels[0]); ImGui::SameLine();
-    ImGui::Checkbox("2", &eegChannels[1]); ImGui::SameLine();
-    ImGui::Checkbox("3", &eegChannels[2]); ImGui::SameLine();
-    ImGui::Checkbox("4", &eegChannels[3]);
-
-    ImGui::Spacing();
     const char* inputModes[] = { "Tap", "Hold" };
     ImGui::Combo("Input Mode", &inputModeHold, inputModes, IM_ARRAYSIZE(inputModes));
     Config::inputModeHold.store(inputModeHold);
-
-    ImGui::Spacing();
-    ImGui::SliderFloat("Refresh Time (s)", &statusRefreshTime, 0.1f, 4.0f);
 
     ImGui::EndChild();
     ImGui::NextColumn();
@@ -456,67 +446,7 @@ void UIManager::RenderUI() {
             if (ImGui::BeginTabBar("ControlVisualsTabBar")) {
 
                 // ------------------------------------------
-                // SUB-TAB A: METER VIEW (Default)
-                // ------------------------------------------
-                if (ImGui::BeginTabItem("Meter View")) {
-                    ImGui::Spacing(); ImGui::Spacing();
-
-                    // Make sure meterTextureID exists and is loaded!
-                    if (focusMeterTextureID != 0) {
-                        // PHYSICS SMOOTHING: Needle doesn't jump violently
-                        static float smoothedFocusDisplay = 0.0f;
-                        smoothedFocusDisplay += (currentConcentration - smoothedFocusDisplay) * 0.05f;
-
-                        float meter_image_ratio = 1539.0f / 3552.0f;
-                        ImVec2 availSpace = ImGui::GetContentRegionAvail();
-                        float targetWidth = availSpace.x * 0.90f;
-                        float targetHeight = targetWidth * meter_image_ratio;
-                        ImVec2 meterSize = ImVec2(targetWidth, targetHeight);
-                        ImGui::SetCursorPosX((availSpace.x - meterSize.x) * 0.5f);
-
-                        // Get starting position of the image on the screen
-                        ImVec2 imgPos = ImGui::GetCursorScreenPos();
-
-                        // 1. Draw the Background PNG
-                        ImGui::Image((void*)(intptr_t)focusMeterTextureID, meterSize);
-
-                        float pivotRatioX = 632.0f / 1283.0f;
-                        float meterRatioBottom = 481.0f / 484.0f;
-                        ImVec2 pivot = ImVec2(imgPos.x + (meterSize.x * pivotRatioX), imgPos.y + (meterSize.y * meterRatioBottom));
-
-                        // 3. Trigonometry: Calculate needle angle and tip position
-                        const float PI = 3.1415926535f;
-                        // Angle maps from PI (Left/0.0) to 2*PI (Right/1.0)
-                        float needleAngle = PI + (smoothedFocusDisplay * PI);
-                        float needleLength = meterSize.y * 0.67f; // Adjust length if it pokes outside the dial
-
-                        ImVec2 needleTip = ImVec2(
-                            pivot.x + cosf(needleAngle) * needleLength,
-                            pivot.y + sinf(needleAngle) * needleLength
-                        );
-
-                        // 4. Draw the Needle
-                        ImDrawList* fg_draw_list = ImGui::GetWindowDrawList();
-
-                        // Optional: Draw a subtle shadow behind the needle
-                        fg_draw_list->AddLine(ImVec2(pivot.x + 3, pivot.y + 3), ImVec2(needleTip.x + 3, needleTip.y + 3), IM_COL32(0, 0, 0, 80), 6.0f);
-
-                        // Draw the actual colored needle (Using dark blue to match your UI)
-                        fg_draw_list->AddLine(pivot, needleTip, IM_COL32(45, 65, 107, 255), 6.0f);
-
-                        // Draw the center pivot pin
-                        fg_draw_list->AddCircleFilled(pivot, 14.0f, IM_COL32(45, 65, 107, 255));
-                        fg_draw_list->AddCircleFilled(pivot, 6.0f, IM_COL32(200, 200, 200, 255)); // Inner highlight
-                    }
-                    else {
-                        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Meter texture not loaded!");
-                    }
-
-                    ImGui::EndTabItem();
-                }
-
-                // ------------------------------------------
-                // SUB-TAB B: GRAPH VIEW (Your exact ImPlot code)
+                // SUB-TAB: GRAPH VIEW
                 // ------------------------------------------
                 if (ImGui::BeginTabItem("Graph View")) {
 
@@ -722,6 +652,66 @@ void UIManager::RenderUI() {
                         ImGui::SetCursorPos(backupCursorPos);
                         ImPlot::EndPlot();
                     }
+                    ImGui::EndTabItem();
+                }
+
+                // ------------------------------------------
+                // SUB-TAB: METER VIEW
+                // ------------------------------------------
+                if (ImGui::BeginTabItem("Meter View")) {
+                    ImGui::Spacing(); ImGui::Spacing();
+
+                    // Make sure meterTextureID exists and is loaded!
+                    if (focusMeterTextureID != 0) {
+                        // PHYSICS SMOOTHING: Needle doesn't jump violently
+                        static float smoothedFocusDisplay = 0.0f;
+                        smoothedFocusDisplay += (currentConcentration - smoothedFocusDisplay) * 0.05f;
+
+                        float meter_image_ratio = 1539.0f / 3552.0f;
+                        ImVec2 availSpace = ImGui::GetContentRegionAvail();
+                        float targetWidth = availSpace.x * 0.90f;
+                        float targetHeight = targetWidth * meter_image_ratio;
+                        ImVec2 meterSize = ImVec2(targetWidth, targetHeight);
+                        ImGui::SetCursorPosX((availSpace.x - meterSize.x) * 0.5f);
+
+                        // Get starting position of the image on the screen
+                        ImVec2 imgPos = ImGui::GetCursorScreenPos();
+
+                        // 1. Draw the Background PNG
+                        ImGui::Image((void*)(intptr_t)focusMeterTextureID, meterSize);
+
+                        float pivotRatioX = 632.0f / 1283.0f;
+                        float meterRatioBottom = 481.0f / 484.0f;
+                        ImVec2 pivot = ImVec2(imgPos.x + (meterSize.x * pivotRatioX), imgPos.y + (meterSize.y * meterRatioBottom));
+
+                        // 3. Trigonometry: Calculate needle angle and tip position
+                        const float PI = 3.1415926535f;
+                        // Angle maps from PI (Left/0.0) to 2*PI (Right/1.0)
+                        float needleAngle = PI + (smoothedFocusDisplay * PI);
+                        float needleLength = meterSize.y * 0.67f; // Adjust length if it pokes outside the dial
+
+                        ImVec2 needleTip = ImVec2(
+                            pivot.x + cosf(needleAngle) * needleLength,
+                            pivot.y + sinf(needleAngle) * needleLength
+                        );
+
+                        // 4. Draw the Needle
+                        ImDrawList* fg_draw_list = ImGui::GetWindowDrawList();
+
+                        // Optional: Draw a subtle shadow behind the needle
+                        fg_draw_list->AddLine(ImVec2(pivot.x + 3, pivot.y + 3), ImVec2(needleTip.x + 3, needleTip.y + 3), IM_COL32(0, 0, 0, 80), 6.0f);
+
+                        // Draw the actual colored needle (Using dark blue to match your UI)
+                        fg_draw_list->AddLine(pivot, needleTip, IM_COL32(45, 65, 107, 255), 6.0f);
+
+                        // Draw the center pivot pin
+                        fg_draw_list->AddCircleFilled(pivot, 14.0f, IM_COL32(45, 65, 107, 255));
+                        fg_draw_list->AddCircleFilled(pivot, 6.0f, IM_COL32(200, 200, 200, 255)); // Inner highlight
+                    }
+                    else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Meter texture not loaded!");
+                    }
+
                     ImGui::EndTabItem();
                 }
                 ImGui::EndTabBar(); // Close TabBar
