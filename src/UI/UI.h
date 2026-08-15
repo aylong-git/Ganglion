@@ -81,6 +81,7 @@ public:
     std::array<float, 5> currentImpedances = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     bool reqImpedanceCheck = false;
     bool reqStopImpedanceCheck = false;
+    float m_dpiScale = 1.0f;
 
 private:
     GLFWwindow* window;

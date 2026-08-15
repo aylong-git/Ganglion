@@ -175,6 +175,14 @@ bool UIManager::Initialize() {
         return false;
     }
 
+    float xscale = 1.0f, yscale = 1.0f;
+    glfwGetWindowContentScale(window, &xscale, &yscale);
+    float scaleFactor = (xscale + yscale) * 0.5f; // Average both axes
+
+    // Clamp to avoid absurdly large UI on tiny screens (optional, but safe)
+    if (scaleFactor < 1.0f) scaleFactor = 1.0f;
+    if (scaleFactor > 3.0f) scaleFactor = 3.0f;
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImPlot::CreateContext();
@@ -193,6 +201,8 @@ bool UIManager::Initialize() {
     fontConfig.OversampleV = 3;
 
     for (int size : desiredSizes) {
+        float scaledSize = (float)size * scaleFactor;
+
         ImFont* loadedFont = io.Fonts->AddFontFromFileTTF(fontPath, (float)size, &fontConfig);
         if (loadedFont != nullptr) {
             fonts[size] = loadedFont;
@@ -201,6 +211,9 @@ bool UIManager::Initialize() {
     if (fonts.empty()) {
         io.Fonts->AddFontDefault(); // Fallback
     }
+
+    ImGui::GetStyle().ScaleAllSizes(scaleFactor);
+    glfwSetWindowSize(window, 1280 * scaleFactor, 720 * scaleFactor);
 
     // 5. Apply Theme
     SetupCustomTheme();
@@ -211,6 +224,7 @@ bool UIManager::Initialize() {
     focusMeterTextureID = LoadComponentTexture("../assets/focus_meter.png");
     concentrationLevelTextureID = LoadComponentTexture("../assets/concentration_level.png");
 
+    m_dpiScale = scaleFactor;
     return true;
 }
 
@@ -311,7 +325,7 @@ void UIManager::RenderUI() {
         ImGui::Text("Enter the device MAC address");
         ImGui::Spacing();
         if (macHelpTextureID != 0) {
-            ImVec2 tooltipImageSize = ImVec2(250.0f, 241.0f);
+            ImVec2 tooltipImageSize = ImVec2(250.0f * m_dpiScale, 241.0f * m_dpiScale);
             ImGui::Image((void*)(intptr_t)macHelpTextureID, tooltipImageSize);
         }
         ImGui::EndTooltip();
@@ -319,7 +333,7 @@ void UIManager::RenderUI() {
 
     ImGui::SameLine();
 
-    float buttonWidth = 50.0f;
+    float buttonWidth = 50.0f * m_dpiScale;
     float spaceBetween = ImGui::GetStyle().ItemSpacing.x;
 
     float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
@@ -328,7 +342,7 @@ void UIManager::RenderUI() {
     float currentX = ImGui::GetCursorPosX();
     float availableForInputsAndColons = buttonStartX - spaceBetween - currentX;
 
-    float colonWidth = ImGui::CalcTextSize(":").x;
+    float colonWidth = ImGui::CalcTextSize(":").x * m_dpiScale;
     float totalColonsWidth = 5.0f * (colonWidth);
 
     float singleInputWidth = (availableForInputsAndColons - totalColonsWidth) / 6.0f;
@@ -435,7 +449,7 @@ void UIManager::RenderUI() {
             ImVec2 p = ImGui::GetCursorScreenPos();
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             ImU32 statusColor = (currentConcentration < focusThreshold) ? IM_COL32(34, 90, 8, 255) : IM_COL32(255, 0, 0, 255);
-            draw_list->AddCircleFilled(ImVec2(p.x + 20, p.y + 20), 15.0f, statusColor);
+            draw_list->AddCircleFilled(ImVec2(p.x + 20, p.y + 20), 15.0f * m_dpiScale, statusColor);
             ImGui::SetCursorScreenPos(ImVec2(p.x + 50, p.y));
             ImGui::Text("\nStatus: %s", (currentConcentration >= focusThreshold) ? "Focusing" : "Relaxing");
             ImGui::Spacing(); ImGui::Spacing();
@@ -557,7 +571,7 @@ void UIManager::RenderUI() {
                         ImGui::GetWindowDrawList()->AddLine(
                             ImVec2(focusKeyStart.x, focusKeyEnd.y - 1.0f),
                             ImVec2(focusKeyEnd.x, focusKeyEnd.y - 1.0f),
-                            ImGui::GetColorU32(focusColor), 2.0f
+                            ImGui::GetColorU32(focusColor), 2.0f * m_dpiScale
                         );
 
                         ImGui::SameLine(0, 0);
@@ -619,7 +633,7 @@ void UIManager::RenderUI() {
                         ImGui::GetWindowDrawList()->AddLine(
                             ImVec2(relaxKeyStart.x, relaxKeyEnd.y - 1.0f),
                             ImVec2(relaxKeyEnd.x, relaxKeyEnd.y - 1.0f),
-                            ImGui::GetColorU32(relaxColor), 2.0f
+                            ImGui::GetColorU32(relaxColor), 2.0f * m_dpiScale
                         );
 
                         ImGui::SameLine(0, 0);
@@ -699,14 +713,14 @@ void UIManager::RenderUI() {
                         ImDrawList* fg_draw_list = ImGui::GetWindowDrawList();
 
                         // Optional: Draw a subtle shadow behind the needle
-                        fg_draw_list->AddLine(ImVec2(pivot.x + 3, pivot.y + 3), ImVec2(needleTip.x + 3, needleTip.y + 3), IM_COL32(0, 0, 0, 80), 6.0f);
+                        fg_draw_list->AddLine(ImVec2(pivot.x + 3, pivot.y + 3), ImVec2(needleTip.x + 3, needleTip.y + 3), IM_COL32(0, 0, 0, 80), 6.0f * m_dpiScale);
 
                         // Draw the actual colored needle (Using dark blue to match your UI)
-                        fg_draw_list->AddLine(pivot, needleTip, IM_COL32(45, 65, 107, 255), 6.0f);
+                        fg_draw_list->AddLine(pivot, needleTip, IM_COL32(45, 65, 107, 255), 6.0f * m_dpiScale);
 
                         // Draw the center pivot pin
-                        fg_draw_list->AddCircleFilled(pivot, 14.0f, IM_COL32(45, 65, 107, 255));
-                        fg_draw_list->AddCircleFilled(pivot, 6.0f, IM_COL32(200, 200, 200, 255)); // Inner highlight
+                        fg_draw_list->AddCircleFilled(pivot, 14.0f * m_dpiScale, IM_COL32(45, 65, 107, 255));
+                        fg_draw_list->AddCircleFilled(pivot, 6.0f * m_dpiScale, IM_COL32(200, 200, 200, 255)); // Inner highlight
                     }
                     else {
                         ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Meter texture not loaded!");
@@ -854,7 +868,7 @@ void UIManager::RenderUI() {
                 // 3. Draw circle indicator centered vertically with the text line
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 float verticalCenter = ImGui::GetFrameHeight() * 0.5f;
-                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 10, p.y + verticalCenter), 8.0f, col);
+                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 10, p.y + verticalCenter), 8.0f * m_dpiScale, col);
 
                 ImGui::SetCursorScreenPos(ImVec2(p.x + 30, p.y));
 
