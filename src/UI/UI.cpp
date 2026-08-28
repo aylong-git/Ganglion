@@ -183,6 +183,7 @@ bool UIManager::Initialize() {
     if (scaleFactor < 1.0f) scaleFactor = 1.0f;
     if (scaleFactor > 3.0f) scaleFactor = 3.0f;
 
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImPlot::CreateContext();
@@ -203,7 +204,7 @@ bool UIManager::Initialize() {
     for (int size : desiredSizes) {
         float scaledSize = (float)size * scaleFactor;
 
-        ImFont* loadedFont = io.Fonts->AddFontFromFileTTF(fontPath, (float)size, &fontConfig);
+        ImFont* loadedFont = io.Fonts->AddFontFromFileTTF(fontPath, scaledSize, &fontConfig);
         if (loadedFont != nullptr) {
             fonts[size] = loadedFont;
         }
