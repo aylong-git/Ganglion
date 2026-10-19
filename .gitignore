@@ -1,0 +1,21 @@
+# Build directories
+/build/
+/out/
+/bin/
+
+# ImGui window state
+imgui.ini
+
+# Visual Studio / CMake caches
+.vs/
+CMakeCache.txt
+CMakeFiles/
+*.dir/
+
+# Compiled files
+*.exe
+*.obj
+*.o
+*.lib
+*.dll
+*.pdb

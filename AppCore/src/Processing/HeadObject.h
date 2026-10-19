@@ -1,0 +1,54 @@
+#pragma once
+#include <vector>
+#include <string>
+#include "imgui.h"
+
+struct HeadModelData {
+    bool isLoaded = false;
+    std::vector<float> vertices;
+
+    unsigned int vaoID = 0;
+    unsigned int vboID = 0;
+    unsigned int fboID = 0;
+    unsigned int renderTextureID = 0;
+    unsigned int rboID = 0;
+    unsigned int shaderProgram = 0;
+    unsigned int modelTextureID = 0;
+
+    int fboWidth = 0;
+    int fboHeight = 0;
+
+    float rotationX = -30.0f;
+    float rotationY = 180.0f;
+    float meshCenter[3] = { 0.0f, 0.0f, 0.0f };
+};
+
+struct SubObject {
+    int id;
+    std::string name;
+    std::string description;
+    float centerX, centerY, centerZ;
+    ImVec2 screenPos;
+    bool isSelectable;
+    unsigned int textureID = 0;
+};
+
+class HeadObject {
+
+public:
+    HeadObject() = default;
+    ~HeadObject();
+
+    void InitModel(const std::string& objFilePath, const std::string& mtlSearchPath);
+    void UpdateSubObjectScreenPositions(ImVec2 viewportSize, ImVec2 viewportPos);
+    void Draw();
+    
+    std::vector<SubObject> subObjects;
+    int selectedObjectID = -1;
+
+private:
+    HeadModelData my3DHead;
+
+    void RenderHeadToFramebuffer(ImVec2 viewportSize);
+    void SetupShaders();
+};

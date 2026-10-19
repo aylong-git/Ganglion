@@ -1,0 +1,25 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "default",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build",
+      "environment": {
+        "VCPKG_ROOT": "C:/Program Files/vcpkg"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/Program Files/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "BRAINFLOW_ROOT": "${sourceDir}/AppCore/external_packages/brainflow-prebuilt"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "configuration": "Release"
+    }
+  ]
+}
