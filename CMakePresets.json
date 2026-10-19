@@ -7,10 +7,10 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
       "environment": {
-        "VCPKG_ROOT": "C:/Program Files/vcpkg"
+        "VCPKG_ROOT": "${sourceDir}/vcpkg"
       },
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "C:/Program Files/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "BRAINFLOW_ROOT": "${sourceDir}/AppCore/external_packages/brainflow-prebuilt"
       }
     }
