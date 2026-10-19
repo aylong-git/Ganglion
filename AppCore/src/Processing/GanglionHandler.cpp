@@ -14,6 +14,13 @@ namespace {
     constexpr int kPlotFilterMinSamples = 24;
 }
 
+void GanglionHandler::SetSSVEPWindow(float windowSeconds) {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    currentWindowSec = windowSeconds;
+    // For your immediate goal, hop ratio equals window ratio (no stride/overlap)
+    ssvepDetector.SetWindowConfig(windowSeconds, windowSeconds); 
+}
+
 void GanglionHandler::SetTargetFrequencies(const float hz[4]) {
     std::lock_guard<std::mutex> lock(dataMutex);
     
@@ -341,10 +348,10 @@ SSVEPDetectSnapshot GanglionHandler::GetSSVEPSnapshot() {
 
 void GanglionHandler::TrySSVEPDetect(const bool enabled[4]) {
     const int fs = samplingRate > 0 ? samplingRate : 200;
-    int windowN = static_cast<int>(std::lround(kSSVEPWindowSec * fs));
+    int windowN = static_cast<int>(std::lround(currentWindowSec * fs));
     if (windowN % 2) windowN--;
     windowN = std::max(32, windowN);
-    const int hopN = std::max(1, static_cast<int>(std::lround(kSSVEPHopSec * fs)));
+    const int hopN = std::max(1, static_cast<int>(std::lround(currentWindowSec * fs)));
 
     bool maskChanged = false;
     int shortest = windowN;

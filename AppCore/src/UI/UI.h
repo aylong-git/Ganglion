@@ -82,6 +82,7 @@ public:
     bool reqImpedanceCheck = false;
     bool reqStopImpedanceCheck = false;
     float m_dpiScale = 1.0f;
+    float SSVEPWindowDuration = 5.0f;
     bool SSVEPPreviewEnabled = false;
     bool SSVEPTestMode = false;
     int SSVEPTestSeq[12] = {};

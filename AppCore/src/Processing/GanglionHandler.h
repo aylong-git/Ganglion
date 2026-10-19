@@ -41,6 +41,7 @@ public:
     EEGPlotSnapshot GetEEGPlotSnapshot();
     void SetMonitorRefreshHz(int hz);
     void SetTargetFrequencies(const float hz[4]);
+    void SetSSVEPWindow(float windowSeconds);
     SSVEPDetectSnapshot GetSSVEPSnapshot();
 
     bool StartImpedanceMode(const std::string& port, const std::string& macAddress);
@@ -79,9 +80,10 @@ private:
     std::mutex dataMutex;
     std::vector<float> currentImpedances = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     std::vector<double> currentBandPowers = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f }; // Delta, Theta, Alpha, Beta, Gamma
-    float currentTargetHz[4] = { 10.0f, 12.0f, 15.0f, 20.0f };
-    double plotBandLowHz = 8.0; 
-    double plotBandHighHz = 22.0;
+    float currentTargetHz[4] = { 5.0f, 9.0f, 13.0f, 17.0f };
+    double plotBandLowHz = 3.0; 
+    double plotBandHighHz = 36.0;
+    float currentWindowSec = 5.0f;
     std::string lastConnectError;
 
     std::array<EEGRing, 4> eegRings{};

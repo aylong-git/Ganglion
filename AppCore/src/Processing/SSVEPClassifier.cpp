@@ -59,12 +59,22 @@ Eigen::MatrixXd ReferenceMatrix(double freqHz, int nSamples, int fs) {
 }
 }
 
+void SSVEPDetector::SetWindowConfig(float windowSeconds, float hopSeconds) {
+    if (windowSeconds == windowSec && hopSeconds == hopSec) return;
+    windowSec = windowSeconds;
+    hopSec = hopSeconds;
+    snap.windowSec = windowSec;
+    snap.hopSec = hopSec;
+    Reset(); // Reset internal buffers to prevent stride index mismatches
+}
+
 void SSVEPDetector::Reset() {
     voteFilled = 0;
     voteWrite = 0;
     snap = {};
     snap.refreshHz = refreshHz;
-    snap.windowSec = static_cast<float>(kSSVEPWindowSec);
+    snap.windowSec = windowSec;
+    snap.hopSec = hopSec;
 }
 
 void SSVEPDetector::SetRefreshHz(int hz) {
@@ -91,7 +101,8 @@ void SSVEPDetector::NoteProgress(float secondsCollected, int fs) {
     snap.secondsCollected = std::max(0.0f, secondsCollected);
     if (fs > 0) snap.samplingRate = fs;
     snap.refreshHz = refreshHz;
-    snap.windowSec = static_cast<float>(kSSVEPWindowSec);
+    snap.windowSec = windowSec;
+    snap.hopSec = hopSec;
 }
 
 void SSVEPDetector::PushVote(int target, float score) {
@@ -129,7 +140,8 @@ void SSVEPDetector::ResolveVote(int& winner, int& votesFor, int& cast) const {
 void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4], int nSamples, int fs) {
     snap.refreshHz = refreshHz;
     snap.samplingRate = fs;
-    snap.windowSec = static_cast<float>(kSSVEPWindowSec);
+    snap.windowSec = windowSec;
+    snap.hopSec = hopSec;
     if (nSamples < 32 || fs < 30 || !channels || !enabled) return;
 
     int used[4];

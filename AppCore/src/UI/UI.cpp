@@ -1555,32 +1555,69 @@ void UIManager::DrawSignalSpectrumPanel() {
             hzBuf[snap.votedWinner], snap.votesForWinner, std::max(1, snap.votesCast),
             (snap.windowWinner >= 0) ? hzBuf[snap.windowWinner] : "-");
     }
-    ImGui::TextDisabled("CCA  %s: %.2f   %s: %.2f   %s: %.2f   %s: %.2f     %d Hz refresh, %.0f s window, %.1f s step",
+    ImGui::TextDisabled("CCA  %s: %.2f   %s: %.2f   %s: %.2f   %s: %.2f     %d Hz refresh, %.1f s window, %.1f s step",
         hzBuf[0], snap.corr[0], hzBuf[1], snap.corr[1], hzBuf[2], snap.corr[2], hzBuf[3], snap.corr[3],
         snap.refreshHz > 0 ? snap.refreshHz : monitorRefreshHz.load(),
-        snap.windowSec, static_cast<float>(kSSVEPHopSec));
+        snap.windowSec, snap.hopSec);
 
     const float plotH = std::max(48.0f, ImGui::GetContentRegionAvail().y);
-    float yMax = 1.0f;
-    if (snap.spectrumCount > 1) {
-        yMax = snap.power[0];
-        for (int i = 1; i < snap.spectrumCount; ++i) yMax = std::max(yMax, snap.power[i]);
-        if (yMax < 1e-6f) yMax = 1.0f;
-        else yMax *= 1.15f;
-    }
-
     const ImPlotFlags flags = ImPlotFlags_NoTitle | ImPlotFlags_NoLegend |
         ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
-    if (ImPlot::BeginPlot("##SSVEP_psd", ImVec2(-1.0f, plotH), flags)) {
-        ImPlot::SetupAxes("Frequency (Hz)", "PSD", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
-        ImPlot::SetupAxesLimits(4.0, 46.0, 0.0, yMax, ImPlotCond_Always);
-        if (snap.spectrumCount > 1) {
-            ImPlotSpec spec;
-            spec.LineColor = ImVec4(0.15f, 0.45f, 0.75f, 1.0f);
-            spec.LineWeight = 1.6f;
-            spec.Flags = ImPlotItemFlags_NoLegend;
-            ImPlot::PlotLine("psd", snap.freq.data(), snap.power.data(), snap.spectrumCount, spec);
+
+    // 1. Determine X-axis bounds based on the actual target frequencies
+    float minHz = snap.targetHz[0];
+    float maxHz = snap.targetHz[0];
+    for (int i = 1; i < 4; ++i) {
+        if (snap.targetHz[i] < minHz) minHz = snap.targetHz[i];
+        if (snap.targetHz[i] > maxHz) maxHz = snap.targetHz[i];
+    }
+    double plotMin = static_cast<double>(minHz) - 2.0;
+    double plotMax = static_cast<double>(maxHz) + 2.0;
+
+    // 2. Generate the smooth "Mountain" probability distribution curve
+    const int curvePoints = 100;
+    double xs[curvePoints];
+    double ys[curvePoints];
+    
+    // Adjust 'sigma' to make the peaks wider (blend together) or narrower (sharp spikes)
+    const double sigma = 1.2; 
+    const double two_sigma_sq = 2.0 * sigma * sigma;
+    double distMaxY = 0.01; // Base minimum Y to prevent axis collapsing
+
+    for (int p = 0; p < curvePoints; ++p) {
+        xs[p] = plotMin + p * (plotMax - plotMin) / (curvePoints - 1);
+        double y_val = 0.0;
+        
+        // Sum the Gaussian distributions centered at each target frequency
+        for (int i = 0; i < 4; ++i) {
+            double diff = xs[p] - snap.targetHz[i];
+            double weight = std::max(0.0f, snap.corr[i]); // CCA Score acts as the peak height
+            y_val += weight * std::exp(-(diff * diff) / two_sigma_sq);
         }
+        
+        ys[p] = y_val;
+        if (y_val > distMaxY) distMaxY = y_val;
+    }
+
+    if (ImPlot::BeginPlot("##SSVEP_cca_dist", ImVec2(-1.0f, plotH), flags)) {
+        ImPlot::SetupAxes("Target Frequencies (Hz)", "CCA Probability", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+        ImPlot::SetupAxesLimits(plotMin, plotMax, 0.0, distMaxY * 1.15, ImPlotCond_Always);
+        
+        // Draw the shaded area inside the mountain using ImPlotSpec
+        ImPlotSpec fillSpec;
+        fillSpec.FillColor = ImVec4(0.15f, 0.45f, 0.75f, 1.0f);
+        fillSpec.FillAlpha = 0.4f;
+        fillSpec.Flags = ImPlotItemFlags_NoLegend;
+        ImPlot::PlotShaded("##cca_fill", xs, ys, curvePoints, 0.0, fillSpec);
+
+        // Draw the solid mountain outline curve using ImPlotSpec
+        ImPlotSpec lineSpec;
+        lineSpec.LineColor = ImVec4(0.15f, 0.45f, 0.75f, 1.0f);
+        lineSpec.LineWeight = 2.0f;
+        lineSpec.Flags = ImPlotItemFlags_NoLegend;
+        ImPlot::PlotLine("cca_curve", xs, ys, curvePoints, lineSpec);
+
+        // Draw the vertical lines identifying the actual targets
         for (int i = 0; i < 4; ++i) {
             const bool voted = (i == snap.votedWinner);
             ImPlotSpec line;
@@ -1590,6 +1627,7 @@ void UIManager::DrawSignalSpectrumPanel() {
             const double x = snap.targetHz[i];
             ImPlot::PlotInfLines(hzBuf[i], &x, 1, line);
         }
+        
         ImPlot::EndPlot();
     }
 }
@@ -1840,8 +1878,9 @@ void UIManager::RenderUI() {
                 const ImVec2 resetSize(
                     ImGui::CalcTextSize(resetLabel).x + 16.0f * m_dpiScale,
                     toggleH);
+                    const float sliderW = 120.0f * m_dpiScale;
 
-                const float groupW = hideAllSize.x + gap + labelW + gap + toggleW + gap + resetSize.x;
+                const float groupW = hideAllSize.x + gap + sliderW + gap + labelW + gap + toggleW + gap + resetSize.x;
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - groupW) * 0.5f));
 
                 if (ImGui::Button(hideAllLabel, hideAllSize)) {
@@ -1849,6 +1888,15 @@ void UIManager::RenderUI() {
                         SSVEPBoardLayout.visible[i] = false;
                     }
                 }
+                ImGui::SameLine(0.0f, gap);
+
+                ImGui::SetNextItemWidth(sliderW);
+                ImGui::SliderFloat("##WindowSlider", &SSVEPWindowDuration, 1.0f, 10.0f, "%.1f s");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("SSVEP Window & Step Duration");
+                ImGui::SameLine(0.0f, gap);
+
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(previewLabel);
                 ImGui::SameLine(0.0f, gap);
 
                 ImGui::AlignTextToFramePadding();
