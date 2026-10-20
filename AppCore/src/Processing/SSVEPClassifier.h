@@ -24,6 +24,8 @@ struct SSVEPDetectSnapshot {
     float secondsCollected = 0.0f;
     float windowSec = 5.0f;
     float hopSec = 5.0f;
+    float corr[4] = {};
+    float gateRatio[4] = {};
 };
 
 // Monopoly-style CCA (2 harmonics) on a 5 s window, majority of the last 4

@@ -19,5 +19,7 @@ CMakeFiles/
 *.dll
 *.pdb
 
+vcpkg/
+
 !AppCore/external_packages/**/*.lib
 !AppCore/external_packages/**/*.dll
