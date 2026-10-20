@@ -8,6 +8,19 @@
 #include "HeadObject.h"
 #include <chrono>
 
+#if defined(_WIN32) || defined(_WIN64)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+extern "C" {
+    // Forces NVIDIA Optimus laptops to use the high-performance GPU
+    __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+    // Forces AMD PowerXpress laptops to use the high-performance GPU
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
+
 int main() {
     // Initialize our two main systems
     UIManager uiManager;
@@ -27,7 +40,10 @@ int main() {
     // THE BACKGROUND WORKER THREAD
     // ==========================================
     std::thread workerThread([&]() {
+        auto lastSnapshotTime = std::chrono::high_resolution_clock::now();
+
         while (isRunning) {
+            auto loopStart = std::chrono::high_resolution_clock::now();
 
             // 1. Handle UI Button Presses
             if (uiManager.reqConnect || uiManager.reqImpedanceCheck) {
@@ -106,10 +122,36 @@ int main() {
                 for (int i = 0; i < 4; i++) {
                     if (uiManager.eegChannels[i]) activeChannels.push_back(i + 1);
                 }
-
-                const bool updatePlot = uiManager.signalTabActive.load();
                 ganglionBoard.SetMonitorRefreshHz(uiManager.monitorRefreshHz.load());
-                ganglionBoard.SetTargetFrequencies(uiManager.SSVEPBoardLayout.customHz);
+                
+                // 1. Sync the Window Duration from the UI Slider
+                ganglionBoard.SetSSVEPWindow(uiManager.SSVEPWindowDuration);
+
+                // 2. Sync Target Frequencies (Accounting for Monitor Snapping & Contrast Mode)
+                float brainHz[4];
+                int refresh = uiManager.monitorRefreshHz.load();
+                if (refresh < 30) refresh = 60; // Safety fallback
+
+                for (int i = 0; i < 4; ++i) {
+                    bool contrast = (uiManager.SSVEPBoardLayout.patternMode == 1 && uiManager.SSVEPBoardLayout.contrastMode);
+                    // The physical screen flicker target
+                    float screenTarget = contrast ? (uiManager.SSVEPBoardLayout.customHz[i] / 2.0f) : uiManager.SSVEPBoardLayout.customHz[i];
+                    
+                    // Exact physical monitor frames per cycle
+                    int periodFrames = std::max(2, static_cast<int>(std::lround(static_cast<double>(refresh) / screenTarget)));
+                    float realizedScreenHz = static_cast<float>(refresh) / static_cast<float>(periodFrames);
+                    
+                    // The SSVEP brain response is double the visual flicker in contrast mode
+                    brainHz[i] = contrast ? (realizedScreenHz * 2.0f) : realizedScreenHz;
+                }
+                ganglionBoard.SetTargetFrequencies(brainHz);
+                std::chrono::duration<double, std::milli> elapsedSnapshot = loopStart - lastSnapshotTime;
+                bool updatePlot = false;
+                if (uiManager.signalTabActive.load() && elapsedSnapshot.count() >= 33.3) {
+                    lastSnapshotTime = loopStart;
+                    updatePlot = true;
+                }
+
                 ganglionBoard.ProcessData(activeChannels, updatePlot);
 
                 std::vector<double> bands = ganglionBoard.GetBandPowers();

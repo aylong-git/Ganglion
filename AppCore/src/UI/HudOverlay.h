@@ -11,7 +11,7 @@ struct SSVEPBoardLayout {
     bool visible[4] = { true, true, true, true };
     float customHz[4] = { 5.0f, 9.0f, 13.0f, 17.0f }; // Added customHz array
     int patternMode = 1;
-    bool contrastMode = false;
+    bool contrastMode = true;
     bool smoothMode = true;
 };
 
@@ -62,7 +62,7 @@ private:
     float m_fontBakePx = 64.0f;
 
     int m_patternMode = 1;
-    bool m_contrastMode = false;
+    bool m_contrastMode = true;
     bool m_smoothMode = true;
     unsigned m_texQRCode = 0;
 };

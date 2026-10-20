@@ -34,7 +34,7 @@ public:
     unsigned int qrCodeTextureID = 0;
     unsigned int qrCodeInvTextureID = 0;
     int SSVEPPatternMode = 1;
-    bool SSVEPContrastMode = false;
+    bool SSVEPContrastMode = true;
     bool SSVEPSmoothMode = true;
     int selectedPortIdx = 0;
     std::vector<std::string> availablePorts;
@@ -82,6 +82,7 @@ public:
     bool reqImpedanceCheck = false;
     bool reqStopImpedanceCheck = false;
     float m_dpiScale = 1.0f;
+    int m_swapInterval = 1;
     float SSVEPWindowDuration = 5.0f;
     bool SSVEPPreviewEnabled = false;
     bool SSVEPTestMode = false;

@@ -13,7 +13,6 @@ struct SSVEPDetectSnapshot {
     int refreshHz = 60;
     int samplingRate = 200;
     float targetHz[4] = { 5.0f, 9.0f, 13.0f, 17.0f };
-    float corr[4] = {};
     int windowWinner = -1;
     int votedWinner = -1;
     int votesCast = 0;
@@ -25,7 +24,8 @@ struct SSVEPDetectSnapshot {
     float windowSec = 5.0f;
     float hopSec = 5.0f;
     float corr[4] = {};
-    float gateRatio[4] = {};
+    float harmonicSnr[4] = {};
+    float gateRatio = 0.0f;
 };
 
 // Monopoly-style CCA (2 harmonics) on a 5 s window, majority of the last 4

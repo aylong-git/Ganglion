@@ -285,7 +285,10 @@ void UIManager::SetupCustomTheme() {
 }
 
 void UIManager::Run(std::atomic<bool>& isRunning) {
+    auto lastDashboardRender = std::chrono::high_resolution_clock::now();
+
     while (!glfwWindowShouldClose(window) && isRunning) {
+        auto frameStart = std::chrono::high_resolution_clock::now();
         glfwPollEvents();
 
         const bool iconified = glfwGetWindowAttrib(window, GLFW_ICONIFIED) != 0;
@@ -294,8 +297,26 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
         }
         m_wasIconified = iconified;
 
-        if (!iconified) {
-            ++SSVEPFrame;
+        const bool hudActive = hudOverlay.IsActive();
+        const bool fastFlickerInMainWin = SSVEPTestMode || SSVEPPreviewEnabled;
+
+        // Cap the heavy dashboard UI & graphs to ~30 FPS (33.3 ms) when HUD is active,
+        // or ~60 FPS (16.6 ms) during normal browsing.
+        // If Test Mode or Preview is active inside the main window, render every frame (165 Hz).
+        const double dashIntervalMs = hudActive ? 33.3 : 16.6;
+        std::chrono::duration<double, std::milli> sinceLastDash = frameStart - lastDashboardRender;
+        const bool renderMainWindow = !iconified && (fastFlickerInMainWin || sinceLastDash.count() >= dashIntervalMs);
+
+        // Advance SSVEP frame counter on every loop tick
+        ++SSVEPFrame;
+
+        if (renderMainWindow) {
+            lastDashboardRender = frameStart;
+
+            glfwMakeContextCurrent(window);
+            // If HUD is active, let the HUD window pace VSYNC (set main window to 0 to avoid double-VSYNC halving)
+            glfwSwapInterval(hudActive ? 0 : 1);
+
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
@@ -318,13 +339,17 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
             glfwSwapBuffers(window);
         }
 
-        if (hudOverlay.IsActive()) {
-            // Minimized main windows are vsync-throttled by DWM (~10 Hz).
-            // Pace flicker from the visible HUD boards instead.
-            hudOverlay.Render(/*waitForVsync=*/iconified);
+        // HUD Overlay ALWAYS renders every single hardware VBlank (165 Hz)
+        if (hudActive) {
+            hudOverlay.Render(iconified);
         }
-        else if (iconified) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        else if (!fastFlickerInMainWin) {
+            // When no high-Hz flicker is active, sleep to cap the idle dashboard at ~60 FPS
+            auto frameEnd = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> elapsed = frameEnd - frameStart;
+            if (elapsed.count() < 16.0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(16.0 - elapsed.count())));
+            }
         }
     }
 
@@ -410,10 +435,10 @@ void EnterSSVEPTestFullscreen(GLFWwindow* window, int* x, int* y, int* w, int* h
     }
 }
 
-void LeaveSSVEPTestFullscreen(GLFWwindow* window, int x, int y, int w, int h) {
+void LeaveSSVEPTestFullscreen(GLFWwindow* window, int x, int y, int w, int h, int swapInterval) {
     if (!window) return;
     glfwSetWindowMonitor(window, nullptr, x, y, std::max(320, w), std::max(240, h), 0);
-    glfwSwapInterval(1);
+    glfwSwapInterval(swapInterval); // Restore the calculated fractional interval
 }
 
 void GenerateSSVEPTestSequence(int* seq, int* len, const bool visible[4]) {
@@ -717,13 +742,8 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
 
     if (previewOn) {
 
-        float actualHz[4];
-        for (int i = 0; i < 4; ++i) {
-            actualHz[i] = (layout->patternMode == 1 && layout->contrastMode) ? (layout->customHz[i] / 2.0f) : layout->customHz[i];
-        }
+        double timeNow = glfwGetTime();
 
-        SSVEPFlicker flickers[kSSVEPTargetCount];
-        ComputeSSVEPFlickers(refreshHz, flickers, actualHz);
         for (int i = 0; i < 4; ++i) {
             const ImVec2 a = corners[i];
             const ImVec2 b = ImVec2(a.x + sides[i], a.y + sides[i]);
@@ -731,25 +751,31 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
                 draw->AddRect(a, b, IM_COL32(160, 160, 160, 160), 0.0f, 0, 1.5f * dpi);
                 continue;
             }
-            const bool on = SSVEPSquareOn(frame, flickers[i].periodFrames);
-            float alpha = layout->smoothMode ? SSVEPSineAlpha(frame, refreshHz, flickers[i].nominalHz) : (on ? 1.0f : 0.0f);
+
+            // 1. Time-Based Absolute Frequency Math
+            bool contrast = (layout->patternMode == 1 && layout->contrastMode);
+            double screenTarget = contrast ? (static_cast<double>(layout->customHz[i]) / 2.0) : static_cast<double>(layout->customHz[i]);
+            double phase = std::fmod(timeNow * screenTarget, 1.0);
+            bool on = phase < 0.5;
             
-            // Note: If modifying DrawSSVEPTestScreen, use `layout.smoothMode`, `layout.patternMode`, etc.
-            
+            // 2. Alpha Interpolation
+            float alpha = on ? 1.0f : 0.0f;
+            if (layout->smoothMode) {
+                alpha = 0.5f - 0.5f * static_cast<float>(std::cos(2.0 * 3.14159265358979 * phase));
+            }
+
             ImU8 aVal = static_cast<ImU8>(alpha * 255.0f);
             ImU8 invVal = static_cast<ImU8>((1.0f - alpha) * 255.0f);
 
+            // 3. Texture / Contrast Reversal Drawing
             if (layout->patternMode == 1 && qrTex) {
                 if (layout->contrastMode && qrInvTex) {
-                    // Pattern Reversal: Crossfade normal and inverted textures
                     draw->AddImage((ImTextureID)(intptr_t)qrTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, aVal));
                     draw->AddImage((ImTextureID)(intptr_t)qrInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, invVal));
                 } else {
-                    // Full Black: Tint the normal texture
                     draw->AddImage((ImTextureID)(intptr_t)qrTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(aVal, aVal, aVal, 255));
                 }
             } else {
-                // Plain Board
                 draw->AddRectFilled(a, b, IM_COL32(aVal, aVal, aVal, 255));
             }
             draw->AddRect(a, b, IM_COL32(80, 80, 80, 255));
@@ -946,15 +972,8 @@ bool DrawSSVEPTestScreen(float dpi, ImFont* keyFont, const SSVEPBoardLayout& lay
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
 
-    float actualHz[4];
-    for (int i = 0; i < 4; ++i) {
-        actualHz[i] = (layout.patternMode == 1 && layout.contrastMode) ? (layout.customHz[i] / 2.0f) : layout.customHz[i];
-    }
-
-    SSVEPFlicker flickers[kSSVEPTargetCount];
-    ComputeSSVEPFlickers(refreshHz, flickers, actualHz);
-    
     auto& inputMgr = InputManager::GetInstance();
+    double timeNow = glfwGetTime();
 
     for (int i = 0; i < 4; ++i) {
         if (!layout.visible[i]) continue;
@@ -965,13 +984,32 @@ bool DrawSSVEPTestScreen(float dpi, ImFont* keyFont, const SSVEPBoardLayout& lay
         float y = std::clamp(layout.ny[i] * display.y, 0.0f, yMax);
         const ImVec2 a(x, y);
         const ImVec2 b(x + side, y + side);
-        const bool on = SSVEPSquareOn(frame, flickers[i].periodFrames);
+        
+        // 1. Time-Based Absolute Frequency Math
+        bool contrast = (layout.patternMode == 1 && layout.contrastMode);
+        double screenTarget = contrast ? (static_cast<double>(layout.customHz[i]) / 2.0) : static_cast<double>(layout.customHz[i]);
+        double phase = std::fmod(timeNow * screenTarget, 1.0);
+        bool on = phase < 0.5;
+        
+        // 2. Alpha Interpolation
+        float alpha = on ? 1.0f : 0.0f;
+        if (layout.smoothMode) {
+            alpha = 0.5f - 0.5f * static_cast<float>(std::cos(2.0 * 3.14159265358979 * phase));
+        }
 
+        ImU8 aVal = static_cast<ImU8>(alpha * 255.0f);
+        ImU8 invVal = static_cast<ImU8>((1.0f - alpha) * 255.0f);
+
+        // 3. Texture / Contrast Reversal Drawing
         if (layout.patternMode == 1 && qrTex) {
-            ImU32 tint = on ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 255);
-            draw->AddImage((ImTextureID)(intptr_t)qrTex, a, b, ImVec2(0,0), ImVec2(1,1), tint);
+            if (layout.contrastMode && qrInvTex) {
+                draw->AddImage((ImTextureID)(intptr_t)qrTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, aVal));
+                draw->AddImage((ImTextureID)(intptr_t)qrInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, invVal));
+            } else {
+                draw->AddImage((ImTextureID)(intptr_t)qrTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(aVal, aVal, aVal, 255));
+            }
         } else {
-            draw->AddRectFilled(a, b, on ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 255));
+            draw->AddRectFilled(a, b, IM_COL32(aVal, aVal, aVal, 255));
         }
 
         draw->AddRect(a, b, IM_COL32(80, 80, 80, 255));
@@ -1555,10 +1593,7 @@ void UIManager::DrawSignalSpectrumPanel() {
             hzBuf[snap.votedWinner], snap.votesForWinner, std::max(1, snap.votesCast),
             (snap.windowWinner >= 0) ? hzBuf[snap.windowWinner] : "-");
     }
-    ImGui::TextDisabled("CCA  %s: %.2f   %s: %.2f   %s: %.2f   %s: %.2f     %d Hz refresh, %.1f s window, %.1f s step",
-        hzBuf[0], snap.corr[0], hzBuf[1], snap.corr[1], hzBuf[2], snap.corr[2], hzBuf[3], snap.corr[3],
-        snap.refreshHz > 0 ? snap.refreshHz : monitorRefreshHz.load(),
-        snap.windowSec, snap.hopSec);
+    ImGui::TextDisabled("Gate Ratio: %.2f", snap.gateRatio);
 
     const float plotH = std::max(48.0f, ImGui::GetContentRegionAvail().y);
     const ImPlotFlags flags = ImPlotFlags_NoTitle | ImPlotFlags_NoLegend |
@@ -1603,16 +1638,16 @@ void UIManager::DrawSignalSpectrumPanel() {
         ImPlot::SetupAxes("Target Frequencies (Hz)", "CCA Probability", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
         ImPlot::SetupAxesLimits(plotMin, plotMax, 0.0, distMaxY * 1.15, ImPlotCond_Always);
         
-        // Draw the shaded area inside the mountain using ImPlotSpec
+        // Draw the shaded area inside the mountain using ImPlotSpec (Red theme)
         ImPlotSpec fillSpec;
-        fillSpec.FillColor = ImVec4(0.15f, 0.45f, 0.75f, 1.0f);
-        fillSpec.FillAlpha = 0.4f;
+        fillSpec.FillColor = ImVec4(0.85f, 0.20f, 0.15f, 1.0f); // Red
+        fillSpec.FillAlpha = 0.4f;                              // Transparency
         fillSpec.Flags = ImPlotItemFlags_NoLegend;
         ImPlot::PlotShaded("##cca_fill", xs, ys, curvePoints, 0.0, fillSpec);
 
-        // Draw the solid mountain outline curve using ImPlotSpec
+        // Draw the solid mountain outline curve using ImPlotSpec (Red theme)
         ImPlotSpec lineSpec;
-        lineSpec.LineColor = ImVec4(0.15f, 0.45f, 0.75f, 1.0f);
+        lineSpec.LineColor = ImVec4(0.85f, 0.20f, 0.15f, 1.0f); // Red
         lineSpec.LineWeight = 2.0f;
         lineSpec.Flags = ImPlotItemFlags_NoLegend;
         ImPlot::PlotLine("cca_curve", xs, ys, curvePoints, lineSpec);
@@ -1621,8 +1656,9 @@ void UIManager::DrawSignalSpectrumPanel() {
         for (int i = 0; i < 4; ++i) {
             const bool voted = (i == snap.votedWinner);
             ImPlotSpec line;
-            line.LineColor = voted ? ImVec4(0.85f, 0.20f, 0.15f, 1.0f) : ImVec4(0.45f, 0.45f, 0.45f, 0.85f);
-            line.LineWeight = voted ? 2.0f : 1.0f;
+            // Bright solid red if voted winner, otherwise slightly transparent red (replacing gray)
+            line.LineColor = voted ? ImVec4(1.0f, 0.1f, 0.1f, 1.0f) : ImVec4(0.85f, 0.20f, 0.15f, 0.5f);
+            line.LineWeight = voted ? 2.5f : 1.0f;
             line.Flags = ImPlotItemFlags_NoLegend;
             const double x = snap.targetHz[i];
             ImPlot::PlotInfLines(hzBuf[i], &x, 1, line);
@@ -1633,16 +1669,27 @@ void UIManager::DrawSignalSpectrumPanel() {
 }
 
 void UIManager::RenderUI() {
-    monitorRefreshHz.store(GetContainingMonitorRefresh(window));
+    int hwRefresh = GetContainingMonitorRefresh(window);
+    
+    // If the monitor changed, auto-calculate a VSYNC fraction that keeps rendering >= 60Hz
+    if (hwRefresh != monitorRefreshHz.load()) {
+        monitorRefreshHz.store(hwRefresh);
+        m_swapInterval = 1;
+        while (hwRefresh / (m_swapInterval + 1) >= 60) {
+            m_swapInterval++;
+        }
+        glfwSwapInterval(m_swapInterval);
+    }
     const int refresh = monitorRefreshHz.load();
 
     if (SSVEPTestMode) {
         signalTabActive.store(false);
+        // Pass m_swapInterval as the new final argument here
         if (DrawSSVEPTestScreen(m_dpiScale, SSVEPKeyFont, SSVEPBoardLayout,
             SSVEPTestSeq, SSVEPTestSeqLen, &SSVEPTestIndex, &SSVEPTestCorrect,
             SSVEPTestHit, &SSVEPTestDone, refresh, SSVEPFrame, qrCodeTextureID, qrCodeInvTextureID)) {
             SSVEPTestMode = false;
-            LeaveSSVEPTestFullscreen(window, m_preTestX, m_preTestY, m_preTestW, m_preTestH);
+            LeaveSSVEPTestFullscreen(window, m_preTestX, m_preTestY, m_preTestW, m_preTestH, m_swapInterval);
         }
         return;
     }
@@ -1893,10 +1940,6 @@ void UIManager::RenderUI() {
                 ImGui::SetNextItemWidth(sliderW);
                 ImGui::SliderFloat("##WindowSlider", &SSVEPWindowDuration, 1.0f, 10.0f, "%.1f s");
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("SSVEP Window & Step Duration");
-                ImGui::SameLine(0.0f, gap);
-
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextUnformatted(previewLabel);
                 ImGui::SameLine(0.0f, gap);
 
                 ImGui::AlignTextToFramePadding();

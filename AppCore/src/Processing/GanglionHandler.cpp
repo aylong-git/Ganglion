@@ -213,7 +213,7 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels, bool u
                 for (int ch = 0; ch < 4; ++ch) {
                     if (enabled[ch] && ch < static_cast<int>(allEEGChannels.size())) {
                         const float value = static_cast<float>(data.get_address(allEEGChannels[ch])[s]);
-                        if (updatePlot) PushEEGSample(ch, tRel, value);
+                        PushEEGSample(ch, tRel, value);
                     }
                 }
 
@@ -231,60 +231,61 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels, bool u
         }
 
         if (updatePlot) {
-        std::vector<int> eegRows;
-        eegRows.reserve(activeChannels.size());
-        for (int ch : activeChannels) {
-            if (ch >= 1 && ch <= static_cast<int>(allEEGChannels.size())) {
-                eegRows.push_back(allEEGChannels[ch - 1]);
-            }
-        }
-
-        constexpr int kBandWin = 256;
-        bool ringsReady = !eegRows.empty();
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
+            std::vector<int> eegRows;
+            eegRows.reserve(activeChannels.size());
             for (int ch : activeChannels) {
-                if (ch < 1 || ch > 4 || eegRings[ch - 1].size < kBandWin) {
-                    ringsReady = false;
-                    break;
+                if (ch >= 1 && ch <= static_cast<int>(allEEGChannels.size())) {
+                    eegRows.push_back(allEEGChannels[ch - 1]);
                 }
             }
-        }
 
-        if (ringsReady) {
-            BrainFlowArray<double, 2> packed(static_cast<int>(eegRows.size()), kBandWin);
+            constexpr int kBandWin = 256;
+            bool ringsReady = !eegRows.empty();
             {
                 std::lock_guard<std::mutex> lock(dataMutex);
-                int packedRow = 0;
                 for (int ch : activeChannels) {
-                    if (ch < 1 || ch > 4) continue;
-                    const EEGRing& ring = eegRings[ch - 1];
-                    const int start = (ring.size == kEEGPlotCapacity) ? ring.head : 0;
-                    const int first = ring.size - kBandWin;
-                    double* dest = packed.get_address(packedRow++);
-                    for (int i = 0; i < kBandWin; ++i) {
-                        const int idx = (start + first + i) % kEEGPlotCapacity;
-                        dest[i] = ring.y[idx];
+                    if (ch < 1 || ch > 4 || eegRings[ch - 1].size < kBandWin) {
+                        ringsReady = false;
+                        break;
                     }
                 }
             }
 
-            std::vector<int> packedIdx(eegRows.size());
-            for (size_t i = 0; i < packedIdx.size(); ++i) packedIdx[i] = static_cast<int>(i);
-
-            std::pair<double*, double*> bands = DataFilter::get_avg_band_powers(
-                packed, packedIdx, samplingRate, true);
-            {
-                std::lock_guard<std::mutex> lock(dataMutex);
-                for (int i = 0; i < 5; i++) {
-                    currentBandPowers[i] = bands.first[i];
+            if (ringsReady) {
+                BrainFlowArray<double, 2> packed(static_cast<int>(eegRows.size()), kBandWin);
+                {
+                    std::lock_guard<std::mutex> lock(dataMutex);
+                    int packedRow = 0;
+                    for (int ch : activeChannels) {
+                        if (ch < 1 || ch > 4) continue;
+                        const EEGRing& ring = eegRings[ch - 1];
+                        const int start = (ring.size == kEEGPlotCapacity) ? ring.head : 0;
+                        const int first = ring.size - kBandWin;
+                        double* dest = packed.get_address(packedRow++);
+                        for (int i = 0; i < kBandWin; ++i) {
+                            const int idx = (start + first + i) % kEEGPlotCapacity;
+                            dest[i] = ring.y[idx];
+                        }
+                    }
                 }
+
+                std::vector<int> packedIdx(eegRows.size());
+                for (size_t i = 0; i < packedIdx.size(); ++i) packedIdx[i] = static_cast<int>(i);
+
+                std::pair<double*, double*> bands = DataFilter::get_avg_band_powers(
+                    packed, packedIdx, samplingRate, true);
+                {
+                    std::lock_guard<std::mutex> lock(dataMutex);
+                    for (int i = 0; i < 5; i++) {
+                        currentBandPowers[i] = bands.first[i];
+                    }
+                }
+                delete[] bands.first;
+                delete[] bands.second;
             }
-            delete[] bands.first;
-            delete[] bands.second;
         }
+        
         TrySSVEPDetect(enabled);
-        }
     }
     catch (const BrainFlowException& err) {
         std::cerr << "[BrainFlow Processing Error] " << err.what() << std::endl;

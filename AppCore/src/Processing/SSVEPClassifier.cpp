@@ -151,12 +151,8 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
     }
     if (nCh <= 0) return;
 
-    SSVEPFlicker flickers[kSSVEPTargetCount];
-    ComputeSSVEPFlickers(refreshHz, flickers);
-    for (int i = 0; i < 4; ++i) snap.targetHz[i] = flickers[i].realizedHz;
-
-    const double lo = std::max(1.0, static_cast<double>(flickers[0].realizedHz) - 1.5);
-    double hi = static_cast<double>(flickers[3].realizedHz) * 2.0 + 3.0;
+    const double lo = std::max(1.0, static_cast<double>(snap.targetHz[0]) - 1.5);
+    double hi = static_cast<double>(snap.targetHz[3]) * 2.0 + 3.0;
     hi = std::min(46.0, hi);
     if (hi <= lo + 2.0) hi = lo + 2.0;
 
@@ -167,8 +163,9 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
             double* row = filtered[static_cast<size_t>(c)].data();
             const float* src = channels[used[c]];
             for (int i = 0; i < nSamples; ++i) row[i] = static_cast<double>(src[i]);
+
+            DataFilter::detrend(row, nSamples, (int)DetrendOperations::CONSTANT);
             DataFilter::perform_bandstop(row, nSamples, fs, 48.0, 52.0, 4, (int)FilterTypes::BUTTERWORTH, 0.0);
-            DataFilter::perform_bandstop(row, nSamples, fs, 58.0, 62.0, 4, (int)FilterTypes::BUTTERWORTH, 0.0);
             DataFilter::perform_bandpass(row, nSamples, fs, lo, hi, 4, (int)FilterTypes::BUTTERWORTH, 0.0);
         }
     }
@@ -186,7 +183,7 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
     int best = 0;
     float bestCorr = -1.0f;
     for (int t = 0; t < 4; ++t) {
-        const Eigen::MatrixXd X = ReferenceMatrix(flickers[t].realizedHz, nSamples, fs);
+        const Eigen::MatrixXd X = ReferenceMatrix(snap.targetHz[t], nSamples, fs);
         const float corr = static_cast<float>(CanonicalCorrelation(X, Y));
         snap.corr[t] = corr;
         if (corr > bestCorr) {
@@ -195,24 +192,79 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
         }
     }
     snap.windowWinner = best;
-    PushVote(best, bestCorr);
-    ResolveVote(snap.votedWinner, snap.votesForWinner, snap.votesCast);
+    snap.votedWinner = best;
+    snap.votesForWinner = 1;
+    snap.votesCast = 1;
 
     snap.spectrumCount = 0;
     std::vector<double> acc;
     std::vector<double> freqs;
     int nPsd = 0;
+
+    // 1. Helper Lambda of SNR function
+    auto calcSNR = [&](const double* power_spec, const double* freqs_arr, int psdLen, double targetFreq, int nBins) -> double {
+        int best_idx = 0;
+        double min_diff = 1e9;
+        for(int i = 0; i < psdLen; ++i) {
+            double diff = std::abs(freqs_arr[i] - targetFreq);
+            if(diff < min_diff) {
+                min_diff = diff;
+                best_idx = i;
+            }
+        }
+        
+        double signal = power_spec[best_idx];
+        double noise_sum = 0.0;
+        int noise_count = 0;
+        
+        // Simple neighborhood mean for noise (excluding the target bin)
+        for(int i = std::max(0, best_idx - nBins); i <= best_idx + nBins && i < psdLen; ++i) {
+            if(i != best_idx) {
+                noise_sum += power_spec[i];
+                noise_count++;
+            }
+        }
+        
+        double noise = (noise_count > 0) ? (noise_sum / noise_count) : 1e-6;
+        if (noise < 1e-6) noise = 1e-6; // Safety against div by zero
+        return signal / noise;
+    };
+
+    const float channel_weights[4] = {0.15f, 0.35f, 0.35f, 0.15f};
+    float weighted_avg_powers[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float total_weight = 0.0f;
+
     try {
         for (int c = 0; c < nCh; ++c) {
+            int orig_ch = used[c]; // Map to original channel index 0-3
             int psdLen = 0;
+            
+            // BrainFlow get_psd computes the power spectrum 
             auto psd = DataFilter::get_psd(
                 filtered[static_cast<size_t>(c)].data(), nSamples, fs,
                 (int)WindowOperations::HANNING, &psdLen);
+                
             if (psdLen <= 0 || !psd.first || !psd.second) {
-                delete[] psd.first;
-                delete[] psd.second;
+                if (psd.first) delete[] psd.first;
+                if (psd.second) delete[] psd.second;
                 continue;
             }
+            
+            // 2. Compute SNR and Harmonic Summation for the current channel
+            float ch_weight = channel_weights[orig_ch];
+            total_weight += ch_weight;
+
+            for (int t = 0; t < 4; ++t) {
+                double target_freq = snap.targetHz[t];
+                double snr_1 = calcSNR(psd.first, psd.second, psdLen, target_freq, 3);
+                double snr_2 = calcSNR(psd.first, psd.second, psdLen, target_freq * 2.0, 3);
+                
+                // Harmonic Summation applied with Channel Weights
+                double h_snr = snr_1 + 0.5 * snr_2;
+                weighted_avg_powers[t] += static_cast<float>(h_snr * ch_weight);
+            }
+
+            // Existing PSD accumulation for the UI
             if (acc.empty()) {
                 acc.assign(static_cast<size_t>(psdLen), 0.0);
                 freqs.assign(static_cast<size_t>(psdLen), 0.0);
@@ -221,12 +273,47 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
             const int n = std::min(psdLen, static_cast<int>(acc.size()));
             for (int i = 0; i < n; ++i) acc[static_cast<size_t>(i)] += psd.first[i];
             ++nPsd;
+            
             delete[] psd.first;
             delete[] psd.second;
         }
     }
     catch (const BrainFlowException& err) {
-        std::cerr << "[SSVEP] psd: " << err.what() << std::endl;
+        std::cerr << "[SSVEP] psd/snr error: " << err.what() << std::endl;
+    }
+
+    // 3. Finalize Weighted Average and Calculate the Gate Ratio
+    if (total_weight > 0.0f) {
+        float max_score = -1.0f;
+        int max_idx = -1;
+        float sum_other_scores = 0.0f;
+        
+        for (int t = 0; t < 4; ++t) {
+            weighted_avg_powers[t] /= total_weight; // Normalize by active channel weights
+            snap.harmonicSnr[t] = weighted_avg_powers[t]; // Store the SNR scores
+            
+            if (weighted_avg_powers[t] > max_score) {
+                max_score = weighted_avg_powers[t];
+                max_idx = t;
+            }
+        }
+        
+        // Extract the scores of non-target frequencies to find the noise floor
+        for (int t = 0; t < 4; ++t) {
+            if (t != max_idx) {
+                sum_other_scores += weighted_avg_powers[t];
+            }
+        }
+        
+        float mean_other_scores = sum_other_scores / 3.0f;
+        snap.gateRatio = (mean_other_scores > 0.0f) ? (max_score / mean_other_scores) : 0.0f;
+        
+        // Optional: Print to console exactly like your python script
+        // std::cout << "Max Freq: " << snap.targetHz[max_idx] << " Hz | Gate Ratio: " << snap.gateRatio << "\n";
+        
+    } else {
+        for (int t = 0; t < 4; ++t) snap.harmonicSnr[t] = 0.0f;
+        snap.gateRatio = 0.0f;
     }
 
     if (nPsd > 0) {
