@@ -28,7 +28,8 @@ public:
     void Leave();
     bool IsActive() const { return m_boards[0] != nullptr; }
     void Sync(const SSVEPBoardLayout& layout);
-    void Render(bool waitForVsync);
+    // swapInterval is how many vblanks the pacing board waits. The other boards present immediately.
+    void Render(int swapInterval);
 
 private:
     bool InitGl();
@@ -50,7 +51,8 @@ private:
     GLFWwindow* m_share = nullptr;
     unsigned long long m_frame = 0;
     int m_refreshHz = 60;
-    bool m_waitVsync = false;
+    int m_appliedSwap = -1;
+    int m_vsyncBoard = -2;
     int m_patch[4] = {};
     int m_winH[4] = {};
 

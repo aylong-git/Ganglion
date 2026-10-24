@@ -251,7 +251,8 @@ bool HudOverlay::Enter(GLFWwindow* shareContext, const SSVEPBoardLayout& layout)
     }
 
     m_frame = 0;
-    m_waitVsync = false;
+    m_appliedSwap = -1;
+    m_vsyncBoard = -2;
     glfwMakeContextCurrent(m_share);
     return true;
 }
@@ -265,7 +266,8 @@ void HudOverlay::Leave() {
         }
     }
     m_frame = 0;
-    m_waitVsync = false;
+    m_appliedSwap = -1;
+    m_vsyncBoard = -2;
     for (int i = 0; i < 4; ++i) {
         m_patch[i] = 0;
         m_winH[i] = 0;
@@ -583,20 +585,24 @@ void HudOverlay::DrawCaption(const char* text, float cx, float cy, float maxW, f
     }
 }
 
-void HudOverlay::Render(bool waitForVsync) {
+void HudOverlay::Render(int swapInterval) {
     if (!IsActive() || !m_prog) return;
+    if (swapInterval < 1) swapInterval = 1;
 
     int vsyncBoard = -1;
     for (int i = 0; i < 4; ++i) {
         if (m_boards[i] && m_visible[i]) vsyncBoard = i;
     }
 
-    if (waitForVsync != m_waitVsync) {
-        m_waitVsync = waitForVsync;
+    // One board blocks on the display. The others present without waiting,
+    // so four windows do not stack four vblank waits.
+    if (swapInterval != m_appliedSwap || vsyncBoard != m_vsyncBoard) {
+        m_appliedSwap = swapInterval;
+        m_vsyncBoard = vsyncBoard;
         for (int i = 0; i < 4; ++i) {
             if (!m_boards[i] || !m_visible[i]) continue;
             glfwMakeContextCurrent(m_boards[i]);
-            glfwSwapInterval((waitForVsync && i == vsyncBoard) ? 1 : 0);
+            glfwSwapInterval(i == vsyncBoard ? swapInterval : 0);
         }
     }
 
@@ -607,7 +613,6 @@ void HudOverlay::Render(bool waitForVsync) {
     for (int i = 0; i < 4; ++i) {
         if (!m_boards[i] || !m_visible[i]) continue;
         glfwSetWindowShouldClose(m_boards[i], GLFW_FALSE);
-        HudOverlayKeepOnTop(m_boards[i]);
         glfwMakeContextCurrent(m_boards[i]);
 
         int fbW = 0, fbH = 0;
@@ -729,8 +734,5 @@ void HudOverlay::Render(bool waitForVsync) {
     ++m_frame;
     if (m_share) {
         glfwMakeContextCurrent(m_share);
-        if (!waitForVsync) {
-            glfwSwapInterval(1);
-        }
     }
 }

@@ -297,6 +297,11 @@ void UIManager::SetupCustomTheme() {
     style.Colors[ImGuiCol_Border] = ImVec4(0.2f, 0.6f, 0.8f, 0.5f);
 }
 
+namespace {
+int GetContainingMonitorRefresh(GLFWwindow* window);
+int SwapIntervalForRefresh(int refreshHz);
+}
+
 void UIManager::Run(std::atomic<bool>& isRunning) {
     auto lastDashboardRender = std::chrono::high_resolution_clock::now();
 
@@ -310,12 +315,19 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
         }
         m_wasIconified = iconified;
 
-        const bool hudActive = hudOverlay.IsActive();
-        const bool fastFlickerInMainWin = SSVEPTestMode || SSVEPPreviewEnabled;
+        const int hwRefresh = GetContainingMonitorRefresh(window);
+        if (hwRefresh != monitorRefreshHz.load()) {
+            monitorRefreshHz.store(hwRefresh);
+        }
+        m_swapInterval = SwapIntervalForRefresh(monitorRefreshHz.load());
 
-        // Cap the heavy dashboard UI & graphs to ~30 FPS (33.3 ms) when HUD is active,
-        // or ~60 FPS (16.6 ms) during normal browsing.
-        // If Test Mode or Preview is active inside the main window, render every frame (165 Hz).
+        const bool hudActive = hudOverlay.IsActive();
+        // Preview flicker in the dashboard is extra. While the HUD windows are
+        // already stimulating, keep the dashboard on the slow path.
+        const bool fastFlickerInMainWin = SSVEPTestMode || (SSVEPPreviewEnabled && !hudActive);
+
+        // Dashboard UI stays near 30 Hz while HUD is up, otherwise near 60 Hz.
+        // Test mode, and preview with HUD off, render every paced frame.
         const double dashIntervalMs = hudActive ? 33.3 : 16.6;
         std::chrono::duration<double, std::milli> sinceLastDash = frameStart - lastDashboardRender;
         const bool renderMainWindow = !iconified && (fastFlickerInMainWin || sinceLastDash.count() >= dashIntervalMs);
@@ -327,8 +339,8 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
             lastDashboardRender = frameStart;
 
             glfwMakeContextCurrent(window);
-            // If HUD is active, let the HUD window pace VSYNC (set main window to 0 to avoid double-VSYNC halving)
-            glfwSwapInterval(hudActive ? 0 : 1);
+            // HUD boards own the vblank wait. A second wait here would cut the rate in half.
+            glfwSwapInterval(hudActive ? 0 : m_swapInterval);
 
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
@@ -352,16 +364,25 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
             glfwSwapBuffers(window);
         }
 
-        // HUD Overlay ALWAYS renders every single hardware VBlank (165 Hz)
         if (hudActive) {
-            hudOverlay.Render(iconified);
+            hudOverlay.Render(m_swapInterval);
         }
-        else if (!fastFlickerInMainWin) {
-            // When no high-Hz flicker is active, sleep to cap the idle dashboard at ~60 FPS
-            auto frameEnd = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double, std::milli> elapsed = frameEnd - frameStart;
-            if (elapsed.count() < 16.0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(16.0 - elapsed.count())));
+
+        // Swap interval paces the loop when the driver honors it. If a frame
+        // returns much earlier than one slot of the refresh, the driver did
+        // not wait, so sleep the rest. That covers machines where swap interval
+        // is ignored, without adding a second wait when vsync already blocked.
+        const bool pacedBySwap = hudActive || fastFlickerInMainWin;
+        auto frameEnd = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> elapsed = frameEnd - frameStart;
+        const int refresh = std::max(30, monitorRefreshHz.load());
+        const double budgetMs = pacedBySwap
+            ? (1000.0 * static_cast<double>(m_swapInterval) / static_cast<double>(refresh))
+            : 16.0;
+        if (!pacedBySwap || elapsed.count() < budgetMs * 0.5) {
+            if (elapsed.count() < budgetMs) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(
+                    static_cast<int>(budgetMs - elapsed.count())));
             }
         }
     }
@@ -429,6 +450,17 @@ int GetContainingMonitorRefresh(GLFWwindow* window) {
         if (mode && mode->refreshRate >= 30) return mode->refreshRate;
     }
     return 60;
+}
+
+// Largest vblank step that still presents at 60 Hz or above.
+// 60 Hz -> 1, 120 Hz -> 2 (60 Hz), 165 Hz -> 2 (82.5 Hz), 240 Hz -> 4 (60 Hz).
+int SwapIntervalForRefresh(int refreshHz) {
+    const int hz = (refreshHz >= 30) ? refreshHz : 60;
+    int interval = 1;
+    while (interval < hz && hz / (interval + 1) >= 60) {
+        ++interval;
+    }
+    return interval;
 }
 
 void EnterSSVEPTestFullscreen(GLFWwindow* window, int* x, int* y, int* w, int* h) {
@@ -1682,17 +1714,6 @@ void UIManager::DrawSignalSpectrumPanel() {
 }
 
 void UIManager::RenderUI() {
-    int hwRefresh = GetContainingMonitorRefresh(window);
-    
-    // If the monitor changed, auto-calculate a VSYNC fraction that keeps rendering >= 60Hz
-    if (hwRefresh != monitorRefreshHz.load()) {
-        monitorRefreshHz.store(hwRefresh);
-        m_swapInterval = 1;
-        while (hwRefresh / (m_swapInterval + 1) >= 60) {
-            m_swapInterval++;
-        }
-        glfwSwapInterval(m_swapInterval);
-    }
     const int refresh = monitorRefreshHz.load();
 
     if (SSVEPTestMode) {

@@ -1,5 +1,25 @@
-* text=auto
+# Store text as LF and check it out as LF on every OS.
+# eol=lf overrides core.autocrlf for files Git classifies as text.
+* text=auto eol=lf
 
-*.cpp text eol=lf
-*.h text eol=lf
-CMakeLists.txt text eol=lf
+# Windows shells misread these when they are LF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Keep binary bytes unchanged.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.dll binary
+*.lib binary
+*.pdb binary
+*.exe binary
+*.zip binary
+*.tar binary
+*.blend binary
+*.blend1 binary

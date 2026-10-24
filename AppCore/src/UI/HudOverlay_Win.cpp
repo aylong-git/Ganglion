@@ -111,5 +111,4 @@ void HudOverlayKeepOnTop(GLFWwindow* window) {
     if (!hwnd) return;
     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    EnablePerPixelAlpha(hwnd);
 }

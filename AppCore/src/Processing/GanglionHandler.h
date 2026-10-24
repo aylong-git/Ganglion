@@ -9,6 +9,7 @@
 
 #include "board_shim.h"
 #include "SSVEPClassifier.h"
+#include "SSVEPTargets.h"
 
 class EEGRecorder;
 
@@ -80,10 +81,10 @@ private:
     std::mutex dataMutex;
     std::vector<float> currentImpedances = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     std::vector<double> currentBandPowers = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f }; // Delta, Theta, Alpha, Beta, Gamma
-    float currentTargetHz[4] = { 5.0f, 9.0f, 13.0f, 17.0f };
-    double plotBandLowHz = 3.0; 
-    double plotBandHighHz = 36.0;
-    float currentWindowSec = 5.0f;
+    float currentTargetHz[4] = { kSSVEPTargetHz[0], kSSVEPTargetHz[1], kSSVEPTargetHz[2], kSSVEPTargetHz[3] };
+    double plotBandLowHz = SSVEPPlotBandLowHz(kSSVEPTargetHz);
+    double plotBandHighHz = SSVEPPlotBandHighHz(kSSVEPTargetHz);
+    float currentWindowSec = static_cast<float>(kSSVEPWindowSec);
     std::string lastConnectError;
 
     std::array<EEGRing, 4> eegRings{};

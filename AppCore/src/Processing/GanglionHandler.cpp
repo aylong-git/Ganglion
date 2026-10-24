@@ -24,17 +24,13 @@ void GanglionHandler::SetSSVEPWindow(float windowSeconds) {
 void GanglionHandler::SetTargetFrequencies(const float hz[4]) {
     std::lock_guard<std::mutex> lock(dataMutex);
     
-    float minHz = hz[0];
-    float maxHz = hz[0];
     for (int i = 0; i < 4; ++i) {
         currentTargetHz[i] = hz[i];
-        if (hz[i] < minHz) minHz = hz[i];
-        if (hz[i] > maxHz) maxHz = hz[i];
     }
     
-    // Set dynamic bandpass ranges: min - 2.0 to max + 2.0
-    plotBandLowHz = std::max(0.5, static_cast<double>(minHz - 2.0));
-    plotBandHighHz = static_cast<double>(maxHz + 2.0);
+    // Lowest board frequency minus 2 Hz, through the second harmonic of the highest plus 2 Hz.
+    plotBandLowHz = SSVEPPlotBandLowHz(hz);
+    plotBandHighHz = SSVEPPlotBandHighHz(hz);
     
     // Forward the frequencies to the CCA detector
     ssvepDetector.SetTargetFrequencies(hz);
