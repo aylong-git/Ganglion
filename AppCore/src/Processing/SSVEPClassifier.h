@@ -8,11 +8,13 @@ static constexpr int kSSVEPVoteLength = 4;
 static constexpr double kSSVEPWindowSec = 5.0;
 static constexpr double kSSVEPHopSec = 5.0;
 
+#define SSVEP_TARGETS { 13.0f, 15.5f, 17.0f, 23.5f }
+
 struct SSVEPDetectSnapshot {
     bool ready = false;
     int refreshHz = 60;
     int samplingRate = 200;
-    float targetHz[4] = { 5.0f, 9.0f, 13.0f, 17.0f };
+    float targetHz[4] = SSVEP_TARGETS;
     int windowWinner = -1;
     int votedWinner = -1;
     int votesCast = 0;

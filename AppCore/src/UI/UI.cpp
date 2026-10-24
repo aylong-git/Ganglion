@@ -1,12 +1,13 @@
+#include <filesystem>
+
 #if defined(_WIN32) || defined(_WIN64)
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 #include <shobjidl.h>
-#else
-#include <filesystem>
-namespace fs = std::filesystem;
+
 #endif
 
 #include <glad/glad.h>
@@ -127,8 +128,8 @@ void UIManager::UpdateAvailablePorts() {
     // --- LINUX SYSFS HARDWARE FILTERING ---
     // ==================================================
     try {
-        if (fs::exists("/dev")) {
-            for (const auto& entry : fs::directory_iterator("/dev")) {
+        if (::exists("/dev")) {
+            for (const auto& entry : std::filesystem::directory_iterator("/dev")) {
                 std::string name = entry.path().filename().string();
                 if (name.find("ttyUSB") == 0 || name.find("ttyACM") == 0) {
                     // Linux exposes hardware device strings completely through the sysfs filesystem tree
@@ -159,7 +160,19 @@ void UIManager::UpdateAvailablePorts() {
     }
 }
 
-UIManager::UIManager() : window(nullptr) {}
+UIManager::UIManager() : window(nullptr) {
+
+    std::filesystem::path defaultPath =
+        std::filesystem::absolute("../../recordings").lexically_normal();
+
+    strncpy_s(
+        recordDirectory,
+        sizeof(recordDirectory),
+        defaultPath.string().c_str(),
+        _TRUNCATE
+    );
+
+}
 
 UIManager::~UIManager() {
     Cleanup();
@@ -1957,11 +1970,11 @@ void UIManager::RenderUI() {
                     }
                     
                     // 3. Reset Frequencies to defaults
-                    SSVEPBoardLayout.customHz[0] = 5.0f;
-                    SSVEPBoardLayout.customHz[1] = 9.0f;
-                    SSVEPBoardLayout.customHz[2] = 13.0f;
-                    SSVEPBoardLayout.customHz[3] = 17.0f;
-                    
+                    SSVEPBoardLayout.customHz[0] = SSVEP_Hz[0];
+                    SSVEPBoardLayout.customHz[1] = SSVEP_Hz[1];
+                    SSVEPBoardLayout.customHz[2] = SSVEP_Hz[2];
+                    SSVEPBoardLayout.customHz[3] = SSVEP_Hz[3];
+
                     // 4. Reset Keybinds using our new InputManager method
                     InputManager::GetInstance().ResetAllKeys();
                 }

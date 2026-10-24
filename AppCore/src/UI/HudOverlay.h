@@ -1,5 +1,7 @@
 #pragma once
 
+#define SSVEP_TARGETS { 13.0f, 15.5f, 17.0f, 23.5f }
+
 struct GLFWwindow;
 
 // Top-left of each flicker square, as a fraction of the SSVEP panel
@@ -9,7 +11,7 @@ struct SSVEPBoardLayout {
     float ny[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     float sizeFrac[4] = { 0.10f, 0.10f, 0.10f, 0.10f }; // each square as a fraction of monitor width
     bool visible[4] = { true, true, true, true };
-    float customHz[4] = { 5.0f, 9.0f, 13.0f, 17.0f }; // Added customHz array
+    float customHz[4] = SSVEP_TARGETS; // Added customHz array
     int patternMode = 1;
     bool contrastMode = true;
     bool smoothMode = true;
@@ -31,7 +33,7 @@ private:
     void DrawTexture(unsigned tex, float x0, float y0, float x1, float y1, float tint = 1.0f, int mode = 2);
     void DrawCaption(const char* text, float cx, float cy, float maxW, float maxH);
 
-    float m_customHz[4] = { 5.0f, 9.0f, 13.0f, 17.0f };
+    float m_customHz[4] = SSVEP_TARGETS;
     GLFWwindow* m_boards[4] = {};
     unsigned m_vao[4] = {};
     bool m_visible[4] = { true, true, true, true };
