@@ -2,19 +2,23 @@
 
 #include <array>
 #include <cstdint>
+#include "SSVEPTargets.h"
 
 static constexpr int kSSVEPSpectrumCapacity = 512;
 static constexpr int kSSVEPVoteLength = 4;
 static constexpr double kSSVEPWindowSec = 5.0;
 static constexpr double kSSVEPHopSec = 5.0;
 
-#define SSVEP_TARGETS { 13.0f, 15.5f, 17.0f, 23.5f }
-
 struct SSVEPDetectSnapshot {
     bool ready = false;
     int refreshHz = 60;
     int samplingRate = 200;
-    float targetHz[4] = SSVEP_TARGETS;
+    float targetHz[4] = {
+        kSSVEPTargetHz[0],
+        kSSVEPTargetHz[1],
+        kSSVEPTargetHz[2],
+        kSSVEPTargetHz[3]
+    };
     int windowWinner = -1;
     int votedWinner = -1;
     int votesCast = 0;

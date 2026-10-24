@@ -26,6 +26,7 @@
 #if !defined(_WIN32) && !defined(__APPLE__)
 void HudOverlayApplyPlatformNoActivate(GLFWwindow*, GLFWwindow*) {}
 void HudOverlayKeepOnTop(GLFWwindow*) {}
+void HudOverlaySetVisibleRegion(GLFWwindow*, int, int, int, int, int, int, const unsigned char*, int, int) {}
 #endif
 
 namespace {
@@ -51,25 +52,28 @@ uniform sampler2D uTex;
 uniform vec4 uColor;
 uniform int uMode;
 void main() {
+    vec4 color;
     if (uMode == 1) {
-        float a = texture(uTex, vUV).r;
-        FragColor = vec4(uColor.rgb, uColor.a * a);
+        float a = texture(uTex, vUV).r * uColor.a;
+        color = vec4(uColor.rgb, a);
     } else if (uMode == 2) {
-        FragColor = texture(uTex, vUV) * uColor;
+        color = texture(uTex, vUV) * uColor;
     } else if (uMode == 3) {
         // Invert the texture colors (1.0 - RGB)
         vec4 tex = texture(uTex, vUV);
-        FragColor = vec4(1.0 - tex.r, 1.0 - tex.g, 1.0 - tex.b, tex.a) * uColor;
+        color = vec4(1.0 - tex.r, 1.0 - tex.g, 1.0 - tex.b, tex.a) * uColor;
     } else if (uMode == 4) {
-        // NEW: Perfect single-pass crossfade for Pattern Reversal
-        // uColor.r contains the alpha interpolation factor (0.0 = inverted, 1.0 = normal)
+        // Single-pass crossfade for pattern reversal.
+        // uColor.r is the mix (0 = inverted, 1 = normal).
         vec4 tex = texture(uTex, vUV);
         vec3 inv = vec3(1.0 - tex.r, 1.0 - tex.g, 1.0 - tex.b);
         vec3 mixed = mix(inv, tex.rgb, uColor.r);
-        FragColor = vec4(mixed, tex.a);
+        color = vec4(mixed, tex.a);
     } else {
-        FragColor = uColor;
+        color = uColor;
     }
+    // The Windows compositor reads premultiplied alpha.
+    FragColor = vec4(color.rgb * color.a, color.a);
 }
 )";
 
@@ -104,6 +108,7 @@ void ApplyHudWindowHints() {
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
     glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    glfwWindowHint(GLFW_ALPHA_BITS, 8);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
     glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
@@ -141,7 +146,27 @@ void ComputeHudWindowSize(float sizeFrac, int monitorW, int& patch, int& winH) {
     winH = patch + kIconGapPx + iconH;
 }
 
-unsigned LoadRgbaTexture(const char* relativeUnderAssets, int* outW, int* outH) {
+struct IconMask {
+    int w = 0;
+    int h = 0;
+    std::vector<unsigned char> opaque;
+};
+
+IconMask g_maskShort;
+IconMask g_maskLong;
+IconMask g_maskMouse[3];
+
+void FillIconMask(IconMask& mask, const unsigned char* rgba, int w, int h) {
+    mask.w = w;
+    mask.h = h;
+    mask.opaque.assign(static_cast<size_t>(w) * static_cast<size_t>(h), 0);
+    if (!rgba || w <= 0 || h <= 0) return;
+    for (int i = 0; i < w * h; ++i) {
+        mask.opaque[static_cast<size_t>(i)] = (rgba[i * 4 + 3] > 16) ? 1 : 0;
+    }
+}
+
+unsigned LoadRgbaTexture(const char* relativeUnderAssets, int* outW, int* outH, IconMask* mask) {
     const std::string path = GetAssetPath(relativeUnderAssets);
     int w = 0, h = 0, ch = 0;
     unsigned char* data = stbi_load(path.c_str(), &w, &h, &ch, 4);
@@ -149,6 +174,7 @@ unsigned LoadRgbaTexture(const char* relativeUnderAssets, int* outW, int* outH) 
         std::cerr << "[HUD] Failed to load " << path << "\n";
         return 0;
     }
+    if (mask) FillIconMask(*mask, data, w, h);
     if (outW) *outW = w;
     if (outH) *outH = h;
     unsigned tex = 0;
@@ -348,12 +374,12 @@ bool HudOverlay::InitGl() {
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
     glBufferData(GL_ARRAY_BUFFER, 16 * sizeof(float), nullptr, GL_STREAM_DRAW);
 
-    m_texShort = LoadRgbaTexture("keys/shortkey.png", &m_texShortW, &m_texShortH);
-    m_texLong = LoadRgbaTexture("keys/longkey.png", &m_texLongW, &m_texLongH);
-    m_texMouse[0] = LoadRgbaTexture("keys/mouse_1.png", &m_texMouseW[0], &m_texMouseH[0]);
-    m_texMouse[1] = LoadRgbaTexture("keys/mouse_2.png", &m_texMouseW[1], &m_texMouseH[1]);
-    m_texMouse[2] = LoadRgbaTexture("keys/mouse_3.png", &m_texMouseW[2], &m_texMouseH[2]);
-    m_texQRCode = LoadRgbaTexture("qr_code.png", nullptr, nullptr);
+    m_texShort = LoadRgbaTexture("keys/shortkey.png", &m_texShortW, &m_texShortH, &g_maskShort);
+    m_texLong = LoadRgbaTexture("keys/longkey.png", &m_texLongW, &m_texLongH, &g_maskLong);
+    m_texMouse[0] = LoadRgbaTexture("keys/mouse_1.png", &m_texMouseW[0], &m_texMouseH[0], &g_maskMouse[0]);
+    m_texMouse[1] = LoadRgbaTexture("keys/mouse_2.png", &m_texMouseW[1], &m_texMouseH[1], &g_maskMouse[1]);
+    m_texMouse[2] = LoadRgbaTexture("keys/mouse_3.png", &m_texMouseW[2], &m_texMouseH[2], &g_maskMouse[2]);
+    m_texQRCode = LoadRgbaTexture("qr_code.png", nullptr, nullptr, nullptr);
 
     {
         unsigned char px[4] = { 255, 255, 255, 255 };
@@ -481,7 +507,7 @@ void HudOverlay::DrawSolid(float x0, float y0, float x1, float y1, float r, floa
     glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 void HudOverlay::DrawTexture(unsigned tex, float x0, float y0, float x1, float y1, float tint, int mode) {
@@ -576,13 +602,7 @@ void HudOverlay::Render(bool waitForVsync) {
 
     auto& inputMgr = InputManager::GetInstance();
 
-    float actualHz[4];
-    for (int i = 0; i < 4; ++i) {
-        actualHz[i] = (m_patternMode == 1 && m_contrastMode) ? (m_customHz[i] / 2.0f) : m_customHz[i];
-    }
-
-    SSVEPFlicker flickers[kSSVEPTargetCount];
-    ComputeSSVEPFlickers(m_refreshHz, flickers, actualHz);
+    const double timeNow = glfwGetTime();
 
     for (int i = 0; i < 4; ++i) {
         if (!m_boards[i] || !m_visible[i]) continue;
@@ -594,15 +614,25 @@ void HudOverlay::Render(bool waitForVsync) {
         glfwGetFramebufferSize(m_boards[i], &fbW, &fbH);
         glViewport(0, 0, fbW, fbH);
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         glDisable(GL_DEPTH_TEST);
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         BindBoard(i);
+        const float screenTarget =
+            (m_patternMode == 1 && m_contrastMode)
+            ? (m_customHz[i] / 2.0f)
+            : m_customHz[i];
 
-        const bool on = SSVEPSquareOn(m_frame, flickers[i].periodFrames);
-        float alpha = m_smoothMode ? SSVEPSineAlpha(m_frame, m_refreshHz, flickers[i].nominalHz) : (on ? 1.0f : 0.0f);
+        const bool on =
+            SSVEPSquareOn(timeNow, screenTarget);
+
+        const float alpha =
+            m_smoothMode
+            ? SSVEPSineAlpha(timeNow, screenTarget)
+            : (on ? 1.0f : 0.0f);
+            
         const float square = static_cast<float>(fbW);
         
         if (m_patternMode == 1 && m_texQRCode) {
@@ -654,6 +684,28 @@ void HudOverlay::Render(bool waitForVsync) {
             const float dy = square + gap;
             DrawTexture(tex, dx, dy, dx + dw, dy + dh);
 
+            const IconMask* mask = nullptr;
+            switch (kind) {
+            case KeyIconCatalog::Kind::ShortKey:    mask = &g_maskShort; break;
+            case KeyIconCatalog::Kind::LongKey:     mask = &g_maskLong; break;
+            case KeyIconCatalog::Kind::MouseLeft:   mask = &g_maskMouse[0]; break;
+            case KeyIconCatalog::Kind::MouseRight:  mask = &g_maskMouse[1]; break;
+            case KeyIconCatalog::Kind::MouseMiddle: mask = &g_maskMouse[2]; break;
+            default: break;
+            }
+            int ww = 0, wh = 0;
+            glfwGetWindowSize(m_boards[i], &ww, &wh);
+            const float sx = (fbW > 0) ? static_cast<float>(ww) / static_cast<float>(fbW) : 1.0f;
+            const float sy = (fbH > 0) ? static_cast<float>(wh) / static_cast<float>(fbH) : 1.0f;
+            HudOverlaySetVisibleRegion(m_boards[i], i, ww,
+                static_cast<int>(std::lround(dx * sx)),
+                static_cast<int>(std::lround(dy * sy)),
+                static_cast<int>(std::lround(dw * sx)),
+                static_cast<int>(std::lround(dh * sy)),
+                (mask && !mask->opaque.empty()) ? mask->opaque.data() : nullptr,
+                mask ? mask->w : 0,
+                mask ? mask->h : 0);
+
             const std::string caption = KeyIconCatalog::Caption(key);
             if (!caption.empty()) {
                 const bool longKey = (kind == KeyIconCatalog::Kind::LongKey);
@@ -663,6 +715,11 @@ void HudOverlay::Render(bool waitForVsync) {
                 const float maxH = dh * (longKey ? 0.22f : 0.34f);
                 DrawCaption(caption.c_str(), faceCx, faceCy, maxW, maxH);
             }
+        }
+        else {
+            int ww = 0, wh = 0;
+            glfwGetWindowSize(m_boards[i], &ww, &wh);
+            HudOverlaySetVisibleRegion(m_boards[i], i, ww, 0, 0, 0, 0, nullptr, 0, 0);
         }
 
         glBindVertexArray(0);

@@ -1,6 +1,6 @@
 #pragma once
 
-#define SSVEP_TARGETS { 13.0f, 15.5f, 17.0f, 23.5f }
+#include "SSVEPTargets.h"
 
 struct GLFWwindow;
 
@@ -11,7 +11,12 @@ struct SSVEPBoardLayout {
     float ny[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     float sizeFrac[4] = { 0.10f, 0.10f, 0.10f, 0.10f }; // each square as a fraction of monitor width
     bool visible[4] = { true, true, true, true };
-    float customHz[4] = SSVEP_TARGETS; // Added customHz array
+    float customHz[4] = {
+        kSSVEPTargetHz[0],
+        kSSVEPTargetHz[1],
+        kSSVEPTargetHz[2],
+        kSSVEPTargetHz[3]
+    };
     int patternMode = 1;
     bool contrastMode = true;
     bool smoothMode = true;
@@ -33,7 +38,12 @@ private:
     void DrawTexture(unsigned tex, float x0, float y0, float x1, float y1, float tint = 1.0f, int mode = 2);
     void DrawCaption(const char* text, float cx, float cy, float maxW, float maxH);
 
-    float m_customHz[4] = SSVEP_TARGETS;
+    float m_customHz[4] = {
+        kSSVEPTargetHz[0],
+        kSSVEPTargetHz[1],
+        kSSVEPTargetHz[2],
+        kSSVEPTargetHz[3]
+    };
     GLFWwindow* m_boards[4] = {};
     unsigned m_vao[4] = {};
     bool m_visible[4] = { true, true, true, true };
@@ -71,3 +81,9 @@ private:
 
 void HudOverlayApplyPlatformNoActivate(GLFWwindow* window, GLFWwindow* ownerWindow = nullptr);
 void HudOverlayKeepOnTop(GLFWwindow* window);
+
+// Show the flicker square, plus cartoon pixels whose alpha is set.
+// The empty band under the square stays outside the window.
+void HudOverlaySetVisibleRegion(GLFWwindow* window, int boardIndex, int square,
+    int iconX, int iconY, int iconW, int iconH,
+    const unsigned char* opaque, int srcW, int srcH);

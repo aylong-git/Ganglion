@@ -1970,10 +1970,10 @@ void UIManager::RenderUI() {
                     }
                     
                     // 3. Reset Frequencies to defaults
-                    SSVEPBoardLayout.customHz[0] = SSVEP_Hz[0];
-                    SSVEPBoardLayout.customHz[1] = SSVEP_Hz[1];
-                    SSVEPBoardLayout.customHz[2] = SSVEP_Hz[2];
-                    SSVEPBoardLayout.customHz[3] = SSVEP_Hz[3];
+                    SSVEPBoardLayout.customHz[0] = kSSVEPTargetHz[0];
+                    SSVEPBoardLayout.customHz[1] = kSSVEPTargetHz[1];
+                    SSVEPBoardLayout.customHz[2] = kSSVEPTargetHz[2];
+                    SSVEPBoardLayout.customHz[3] = kSSVEPTargetHz[3];
 
                     // 4. Reset Keybinds using our new InputManager method
                     InputManager::GetInstance().ResetAllKeys();

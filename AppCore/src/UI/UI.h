@@ -14,8 +14,6 @@
 
 struct ImFont;
 
-const float SSVEP_Hz[] = { 13.0f, 15.5f, 17.0f, 23.5f };
-
 class UIManager {
 public:
     UIManager();
