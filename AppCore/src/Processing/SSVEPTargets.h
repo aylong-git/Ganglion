@@ -7,10 +7,10 @@
 #endif
 
 inline constexpr float kSSVEPTargetHz[4] = {
-    13.0f,
+    7.0f,
+    12.0f,
     15.0f,
-    17.0f,
-    19.0f
+    17.0f
 };
 
 // Plot bandpass around the board frequencies: lowest minus 2 Hz,

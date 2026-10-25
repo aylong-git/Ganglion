@@ -117,7 +117,8 @@ bool GanglionHandler::Connect(const std::string& port, const std::string& macAdd
             board->prepare_session();
         }
 
-        board->start_stream(450000, "file://Raw_EEG_Session.csv:w");
+        // Buffer only. An empty streamer string does not write a file.
+        board->start_stream(450000, "");
         std::this_thread::sleep_for(std::chrono::seconds(2));
         board->get_board_data();
         {

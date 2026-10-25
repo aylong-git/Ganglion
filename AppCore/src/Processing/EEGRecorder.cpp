@@ -16,7 +16,8 @@ bool EEGRecorder::Start(const std::string& filepath) {
 
     {
         std::lock_guard<std::mutex> lock(mtx_);
-        file_.open(filepath, std::ios::out | std::ios::trunc);
+        // Binary mode so Windows does not turn \n into CRLF.
+        file_.open(filepath, std::ios::out | std::ios::trunc | std::ios::binary);
         if (!file_.is_open()) {
             std::cerr << "[EEG Record] Failed to open '" << filepath << "'\n";
             return false;
