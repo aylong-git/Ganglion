@@ -14,6 +14,69 @@ namespace {
 constexpr int kHarmonics = 2;
 constexpr double kPi = 3.14159265358979323846;
 
+// Peak SNR on a Hann periodogram. Noise bins start `guard` bins off the line so the
+// Hann main lobe is not treated as noise. A shoulder below the local baseline scores 0.
+double PeakSnr(const double* power, const double* freqs, int nFreq, double targetHz, int guard, int nBins) {
+    int idx = 0;
+    double minDiff = 1e300;
+    for (int i = 0; i < nFreq; ++i) {
+        const double diff = std::abs(freqs[i] - targetHz);
+        if (diff < minDiff) {
+            minDiff = diff;
+            idx = i;
+        }
+    }
+
+    const int far = guard + nBins - 1;
+    const int leftLo = idx - far;
+    const int leftHi = idx - guard;
+    const int rightLo = idx + guard;
+    const int rightHi = idx + far;
+    if (leftLo < 0 || rightHi >= nFreq) return 0.0;
+
+    double sumL = 0.0;
+    double sumR = 0.0;
+    double sumX = 0.0;
+    double sumY = 0.0;
+    double sumXX = 0.0;
+    double sumXY = 0.0;
+    int count = 0;
+    for (int i = leftLo; i <= leftHi; ++i) {
+        const double x = freqs[i];
+        const double y = power[i];
+        sumL += y;
+        sumX += x;
+        sumY += y;
+        sumXX += x * x;
+        sumXY += x * y;
+        ++count;
+    }
+    for (int i = rightLo; i <= rightHi; ++i) {
+        const double x = freqs[i];
+        const double y = power[i];
+        sumR += y;
+        sumX += x;
+        sumY += y;
+        sumXX += x * x;
+        sumXY += x * y;
+        ++count;
+    }
+    if (count < 2) return 0.0;
+
+    const double denom = static_cast<double>(count) * sumXX - sumX * sumX;
+    if (std::abs(denom) < 1e-18) return 0.0;
+    const double slope = (static_cast<double>(count) * sumXY - sumX * sumY) / denom;
+    const double intercept = (sumY - slope * sumX) / static_cast<double>(count);
+    const double signal = power[idx];
+    const double excess = signal - (slope * freqs[idx] + intercept);
+    if (excess <= 0.0) return 0.0;
+
+    const int sideCount = leftHi - leftLo + 1;
+    const double noise = std::max(sumL / sideCount, sumR / sideCount);
+    if (noise <= 0.0) return 0.0;
+    return signal / noise;
+}
+
 double CanonicalCorrelation(const Eigen::MatrixXd& X, const Eigen::MatrixXd& Y) {
     const int n = static_cast<int>(X.rows());
     if (n < 8 || X.cols() < 1 || Y.cols() < 1) return 0.0;
@@ -201,35 +264,8 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
     std::vector<double> freqs;
     int nPsd = 0;
 
-    // 1. Helper Lambda of SNR function
-    auto calcSNR = [&](const double* power_spec, const double* freqs_arr, int psdLen, double targetFreq, int nBins) -> double {
-        int best_idx = 0;
-        double min_diff = 1e9;
-        for(int i = 0; i < psdLen; ++i) {
-            double diff = std::abs(freqs_arr[i] - targetFreq);
-            if(diff < min_diff) {
-                min_diff = diff;
-                best_idx = i;
-            }
-        }
-        
-        double signal = power_spec[best_idx];
-        double noise_sum = 0.0;
-        int noise_count = 0;
-        
-        // Simple neighborhood mean for noise (excluding the target bin)
-        for(int i = std::max(0, best_idx - nBins); i <= best_idx + nBins && i < psdLen; ++i) {
-            if(i != best_idx) {
-                noise_sum += power_spec[i];
-                noise_count++;
-            }
-        }
-        
-        double noise = (noise_count > 0) ? (noise_sum / noise_count) : 1e-6;
-        if (noise < 1e-6) noise = 1e-6; // Safety against div by zero
-        return signal / noise;
-    };
-
+    constexpr int kSnrGuard = 2;
+    constexpr int kSnrBins = 3;
     const float channel_weights[4] = {0.15f, 0.35f, 0.35f, 0.15f};
     float weighted_avg_powers[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float total_weight = 0.0f;
@@ -239,7 +275,7 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
             int orig_ch = used[c]; // Map to original channel index 0-3
             int psdLen = 0;
             
-            // BrainFlow get_psd computes the power spectrum 
+            // One Hann FFT of this window. get_psd_welch is the averaged Welch spectrum.
             auto psd = DataFilter::get_psd(
                 filtered[static_cast<size_t>(c)].data(), nSamples, fs,
                 (int)WindowOperations::HANNING, &psdLen);
@@ -256,8 +292,8 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
 
             for (int t = 0; t < 4; ++t) {
                 double target_freq = snap.targetHz[t];
-                double snr_1 = calcSNR(psd.first, psd.second, psdLen, target_freq, 3);
-                double snr_2 = calcSNR(psd.first, psd.second, psdLen, target_freq * 2.0, 3);
+                double snr_1 = PeakSnr(psd.first, psd.second, psdLen, target_freq, kSnrGuard, kSnrBins);
+                double snr_2 = PeakSnr(psd.first, psd.second, psdLen, target_freq * 2.0, kSnrGuard, kSnrBins);
                 
                 // Harmonic Summation applied with Channel Weights
                 double h_snr = snr_1 + 0.5 * snr_2;

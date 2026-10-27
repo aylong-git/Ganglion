@@ -133,7 +133,8 @@ int main() {
                 if (refresh < 30) refresh = 60; // Safety fallback
 
                 for (int i = 0; i < 4; ++i) {
-                    bool contrast = (uiManager.SSVEPBoardLayout.patternMode == 1 && uiManager.SSVEPBoardLayout.contrastMode);
+                    bool contrast = SSVEPPatternHasContrast(uiManager.SSVEPBoardLayout.patternMode)
+                        && uiManager.SSVEPBoardLayout.contrastMode;
                     // The physical screen flicker target
                     float screenTarget = contrast ? (uiManager.SSVEPBoardLayout.customHz[i] / 2.0f) : uiManager.SSVEPBoardLayout.customHz[i];
                     

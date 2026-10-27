@@ -33,6 +33,8 @@ public:
 
     unsigned int qrCodeTextureID = 0;
     unsigned int qrCodeInvTextureID = 0;
+    unsigned int checkerboardTextureID = 0;
+    unsigned int checkerboardInvTextureID = 0;
     int SSVEPPatternMode = 1;
     bool SSVEPContrastMode = true;
     bool SSVEPSmoothMode = true;

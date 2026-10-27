@@ -250,6 +250,13 @@ bool HudOverlay::Enter(GLFWwindow* shareContext, const SSVEPBoardLayout& layout)
         return false;
     }
 
+    m_patternMode = layout.patternMode;
+    m_contrastMode = layout.contrastMode;
+    m_smoothMode = layout.smoothMode;
+    for (int i = 0; i < 4; ++i) {
+        m_customHz[i] = layout.customHz[i];
+    }
+
     m_frame = 0;
     m_appliedSwap = -1;
     m_vsyncBoard = -2;
@@ -382,6 +389,7 @@ bool HudOverlay::InitGl() {
     m_texMouse[1] = LoadRgbaTexture("keys/mouse_2.png", &m_texMouseW[1], &m_texMouseH[1], &g_maskMouse[1]);
     m_texMouse[2] = LoadRgbaTexture("keys/mouse_3.png", &m_texMouseW[2], &m_texMouseH[2], &g_maskMouse[2]);
     m_texQRCode = LoadRgbaTexture("qr_code.png", nullptr, nullptr, nullptr);
+    m_texCheckerboard = LoadRgbaTexture("checkerboard.png", nullptr, nullptr, nullptr);
 
     {
         unsigned char px[4] = { 255, 255, 255, 255 };
@@ -460,6 +468,7 @@ void HudOverlay::DestroyGl() {
     delTex(m_texMouse[1]);
     delTex(m_texMouse[2]);
     delTex(m_texQRCode);
+    delTex(m_texCheckerboard);
     delTex(m_texFont);
     delTex(m_texWhite);
     m_texShortW = m_texShortH = m_texLongW = m_texLongH = 0;
@@ -625,10 +634,8 @@ void HudOverlay::Render(int swapInterval) {
         glClear(GL_COLOR_BUFFER_BIT);
 
         BindBoard(i);
-        const float screenTarget =
-            (m_patternMode == 1 && m_contrastMode)
-            ? (m_customHz[i] / 2.0f)
-            : m_customHz[i];
+        const bool contrast = SSVEPPatternHasContrast(m_patternMode) && m_contrastMode;
+        const float screenTarget = contrast ? (m_customHz[i] / 2.0f) : m_customHz[i];
 
         const bool on =
             SSVEPSquareOn(timeNow, screenTarget);
@@ -639,18 +646,21 @@ void HudOverlay::Render(int swapInterval) {
             : (on ? 1.0f : 0.0f);
             
         const float square = static_cast<float>(fbW);
-        
-        if (m_patternMode == 1 && m_texQRCode) {
-            if (m_contrastMode) {
-                // CHANGED: Use the new shader mode (4) for a perfect mathematical crossfade.
-                // The 'alpha' variable is passed as the tint, which becomes uColor.r in the shader.
-                DrawTexture(m_texQRCode, 0.0f, 0.0f, square, square, alpha, 4);
+
+        unsigned patternTex = 0;
+        if (m_patternMode == 1) patternTex = m_texQRCode;
+        else if (m_patternMode == 2) patternTex = m_texCheckerboard;
+
+        if (patternTex) {
+            if (contrast) {
+                // Shader mode 4 crossfades the image with its color inverse.
+                // alpha is the mix and is read from uColor.r.
+                DrawTexture(patternTex, 0.0f, 0.0f, square, square, alpha, 4);
             } else {
-                // Standard Tinting: Apply alpha to brightness
-                DrawTexture(m_texQRCode, 0.0f, 0.0f, square, square, alpha, 2);
+                DrawTexture(patternTex, 0.0f, 0.0f, square, square, alpha, 2);
             }
         } else {
-            // Plain Board: Alpha acts as RGB brightness
+            // Plain board: alpha is the grayscale brightness.
             DrawSolid(0.0f, 0.0f, square, square, alpha, alpha, alpha, 1.0f);
         }
 

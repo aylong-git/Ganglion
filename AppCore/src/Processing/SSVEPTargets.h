@@ -8,7 +8,7 @@
 
 inline constexpr float kSSVEPTargetHz[4] = {
     7.0f,
-    12.0f,
+    13.0f,
     15.0f,
     17.0f
 };

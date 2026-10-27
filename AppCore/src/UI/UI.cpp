@@ -178,6 +178,35 @@ UIManager::~UIManager() {
     Cleanup();
 }
 
+// Color-inverted copy used to crossfade a pattern in contrast mode.
+static unsigned int MakeInvertedTexture(unsigned int src) {
+    if (src == 0) return 0;
+
+    glBindTexture(GL_TEXTURE_2D, src);
+    int w = 0, h = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+    if (w <= 0 || h <= 0) return 0;
+
+    std::vector<unsigned char> px(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    for (size_t i = 0; i < px.size(); i += 4) {
+        px[i] = static_cast<unsigned char>(255 - px[i]);
+        px[i + 1] = static_cast<unsigned char>(255 - px[i + 1]);
+        px[i + 2] = static_cast<unsigned char>(255 - px[i + 2]);
+    }
+
+    unsigned int inv = 0;
+    glGenTextures(1, &inv);
+    glBindTexture(GL_TEXTURE_2D, inv);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    return inv;
+}
+
 bool UIManager::Initialize() {
     // 1. Initialize GLFW
     if (!glfwInit()) {
@@ -258,27 +287,9 @@ bool UIManager::Initialize() {
     headObject.InitModel(GetAssetPath("SSVEP_headmodel.obj"), assetsDir);
     macHelpTextureID = LoadComponentTexture(GetAssetPath("mac_help.jpeg").c_str());
     qrCodeTextureID = LoadComponentTexture(GetAssetPath("qr_code.png").c_str());
-
-    if (qrCodeTextureID != 0) {
-        glBindTexture(GL_TEXTURE_2D, qrCodeTextureID);
-        int w = 0, h = 0;
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
-        if (w > 0 && h > 0) {
-            std::vector<unsigned char> px(w * h * 4);
-            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-            for (size_t i = 0; i < px.size(); i += 4) {
-                px[i]   = 255 - px[i];     // R
-                px[i+1] = 255 - px[i+1];   // G
-                px[i+2] = 255 - px[i+2];   // B
-            }
-            glGenTextures(1, &qrCodeInvTextureID);
-            glBindTexture(GL_TEXTURE_2D, qrCodeInvTextureID);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        }
-    }
+    qrCodeInvTextureID = MakeInvertedTexture(qrCodeTextureID);
+    checkerboardTextureID = LoadComponentTexture(GetAssetPath("checkerboard.png").c_str());
+    checkerboardInvTextureID = MakeInvertedTexture(checkerboardTextureID);
 
     m_dpiScale = scaleFactor;
     return true;
@@ -547,7 +558,7 @@ void DrawSlideToggle(const char* id, bool* value, float dpi) {
 
 void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dpi, ImFont* keyFont,
     SSVEPBoardLayout* layout, bool* layoutInit, float monitorW, float monitorH,
-    int refreshHz, std::uint64_t frame, unsigned int qrTex, unsigned int qrInvTex) {
+    int refreshHz, std::uint64_t frame, unsigned int patternTex, unsigned int patternInvTex) {
     if (size.x < 8.0f || size.y < 8.0f || !layout || !layoutInit) return;
 
     const float monitorPad = 10.0f * dpi;
@@ -798,7 +809,7 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
             }
 
             // 1. Time-Based Absolute Frequency Math
-            bool contrast = (layout->patternMode == 1 && layout->contrastMode);
+            bool contrast = SSVEPPatternHasContrast(layout->patternMode) && layout->contrastMode;
             double screenTarget = contrast ? (static_cast<double>(layout->customHz[i]) / 2.0) : static_cast<double>(layout->customHz[i]);
             double phase = std::fmod(timeNow * screenTarget, 1.0);
             bool on = phase < 0.5;
@@ -813,12 +824,12 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
             ImU8 invVal = static_cast<ImU8>((1.0f - alpha) * 255.0f);
 
             // 3. Texture / Contrast Reversal Drawing
-            if (layout->patternMode == 1 && qrTex) {
-                if (layout->contrastMode && qrInvTex) {
-                    draw->AddImage((ImTextureID)(intptr_t)qrTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, aVal));
-                    draw->AddImage((ImTextureID)(intptr_t)qrInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, invVal));
+            if (SSVEPPatternHasContrast(layout->patternMode) && patternTex) {
+                if (contrast && patternInvTex) {
+                    draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, aVal));
+                    draw->AddImage((ImTextureID)(intptr_t)patternInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, invVal));
                 } else {
-                    draw->AddImage((ImTextureID)(intptr_t)qrTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(aVal, aVal, aVal, 255));
+                    draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(aVal, aVal, aVal, 255));
                 }
             } else {
                 draw->AddRectFilled(a, b, IM_COL32(aVal, aVal, aVal, 255));
@@ -972,7 +983,7 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
 
 bool DrawSSVEPTestScreen(float dpi, ImFont* keyFont, const SSVEPBoardLayout& layout,
     const int* seq, int seqLen, int* seqIndex, int* seqCorrect, bool* seqHit, bool* seqDone,
-    int refreshHz, std::uint64_t frame, unsigned int qrTex, unsigned int qrInvTex) {
+    int refreshHz, std::uint64_t frame, unsigned int patternTex, unsigned int patternInvTex) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
     ImGui::SetNextWindowSize(display);
@@ -1031,7 +1042,7 @@ bool DrawSSVEPTestScreen(float dpi, ImFont* keyFont, const SSVEPBoardLayout& lay
         const ImVec2 b(x + side, y + side);
         
         // 1. Time-Based Absolute Frequency Math
-        bool contrast = (layout.patternMode == 1 && layout.contrastMode);
+        bool contrast = SSVEPPatternHasContrast(layout.patternMode) && layout.contrastMode;
         double screenTarget = contrast ? (static_cast<double>(layout.customHz[i]) / 2.0) : static_cast<double>(layout.customHz[i]);
         double phase = std::fmod(timeNow * screenTarget, 1.0);
         bool on = phase < 0.5;
@@ -1046,12 +1057,12 @@ bool DrawSSVEPTestScreen(float dpi, ImFont* keyFont, const SSVEPBoardLayout& lay
         ImU8 invVal = static_cast<ImU8>((1.0f - alpha) * 255.0f);
 
         // 3. Texture / Contrast Reversal Drawing
-        if (layout.patternMode == 1 && qrTex) {
-            if (layout.contrastMode && qrInvTex) {
-                draw->AddImage((ImTextureID)(intptr_t)qrTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, aVal));
-                draw->AddImage((ImTextureID)(intptr_t)qrInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, invVal));
+        if (SSVEPPatternHasContrast(layout.patternMode) && patternTex) {
+            if (contrast && patternInvTex) {
+                draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, aVal));
+                draw->AddImage((ImTextureID)(intptr_t)patternInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, invVal));
             } else {
-                draw->AddImage((ImTextureID)(intptr_t)qrTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(aVal, aVal, aVal, 255));
+                draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(aVal, aVal, aVal, 255));
             }
         } else {
             draw->AddRectFilled(a, b, IM_COL32(aVal, aVal, aVal, 255));
@@ -1716,12 +1727,23 @@ void UIManager::DrawSignalSpectrumPanel() {
 void UIManager::RenderUI() {
     const int refresh = monitorRefreshHz.load();
 
+    unsigned int patternTex = 0;
+    unsigned int patternInvTex = 0;
+    if (SSVEPPatternMode == 2) {
+        patternTex = checkerboardTextureID;
+        patternInvTex = checkerboardInvTextureID;
+    }
+    else if (SSVEPPatternMode == 1) {
+        patternTex = qrCodeTextureID;
+        patternInvTex = qrCodeInvTextureID;
+    }
+
     if (SSVEPTestMode) {
         signalTabActive.store(false);
         // Pass m_swapInterval as the new final argument here
         if (DrawSSVEPTestScreen(m_dpiScale, SSVEPKeyFont, SSVEPBoardLayout,
             SSVEPTestSeq, SSVEPTestSeqLen, &SSVEPTestIndex, &SSVEPTestCorrect,
-            SSVEPTestHit, &SSVEPTestDone, refresh, SSVEPFrame, qrCodeTextureID, qrCodeInvTextureID)) {
+            SSVEPTestHit, &SSVEPTestDone, refresh, SSVEPFrame, patternTex, patternInvTex)) {
             SSVEPTestMode = false;
             LeaveSSVEPTestFullscreen(window, m_preTestX, m_preTestY, m_preTestW, m_preTestH, m_swapInterval);
         }
@@ -1907,13 +1929,13 @@ void UIManager::RenderUI() {
 
             ImGui::BeginChild("SSVEPTopPanel", ImVec2(0.0f, topH), true, ImGuiWindowFlags_HorizontalScrollbar);
             {
-                const char* patternItems[] = { "Plain Board", "QR Code" };
-                ImGui::SetNextItemWidth(150.0f * m_dpiScale);
+                const char* patternItems[] = { "Plain Board", "QR Code", "Checkerboard" };
+                ImGui::SetNextItemWidth(160.0f * m_dpiScale);
                 if (ImGui::Combo("Pattern", &SSVEPPatternMode, patternItems, IM_ARRAYSIZE(patternItems))) {
                     SSVEPBoardLayout.patternMode = SSVEPPatternMode;
                 }
                 
-                if (SSVEPPatternMode == 1) {
+                if (SSVEPPatternHasContrast(SSVEPPatternMode)) {
                     ImGui::SameLine();
                     if (ImGui::Checkbox("Contrast Mode", &SSVEPContrastMode)) {
                         SSVEPBoardLayout.contrastMode = SSVEPContrastMode;
@@ -1941,7 +1963,7 @@ void UIManager::RenderUI() {
                 GetContainingMonitorSize(window, &monitorW, &monitorH);
 
                 DrawSSVEPPreviewBoards(previewOrigin, previewSize, SSVEPPreviewEnabled, m_dpiScale, SSVEPKeyFont,
-                    &SSVEPBoardLayout, &SSVEPBoardLayoutInit, monitorW, monitorH, refresh, SSVEPFrame, qrCodeTextureID, qrCodeInvTextureID);
+                    &SSVEPBoardLayout, &SSVEPBoardLayoutInit, monitorW, monitorH, refresh, SSVEPFrame, patternTex, patternInvTex);
 
                 ImGui::Dummy(previewSize);
 

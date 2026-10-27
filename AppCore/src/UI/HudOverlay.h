@@ -17,10 +17,18 @@ struct SSVEPBoardLayout {
         kSSVEPTargetHz[2],
         kSSVEPTargetHz[3]
     };
+    // 0 = plain board, 1 = QR code, 2 = checkerboard.
     int patternMode = 1;
     bool contrastMode = true;
     bool smoothMode = true;
 };
+
+// Plain boards only brighten and dim. QR and checkerboard can also reverse
+// black and white, which doubles the SSVEP frequency the brain sees.
+inline bool SSVEPPatternHasContrast(int patternMode)
+{
+    return patternMode == 1 || patternMode == 2;
+}
 
 class HudOverlay {
 public:
@@ -79,6 +87,7 @@ private:
     bool m_contrastMode = true;
     bool m_smoothMode = true;
     unsigned m_texQRCode = 0;
+    unsigned m_texCheckerboard = 0;
 };
 
 void HudOverlayApplyPlatformNoActivate(GLFWwindow* window, GLFWwindow* ownerWindow = nullptr);
