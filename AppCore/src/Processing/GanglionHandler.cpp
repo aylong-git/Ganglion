@@ -10,8 +10,33 @@
 #include "data_filter.h"
 
 namespace {
-    constexpr int kPlotFilterOrder = 6;
     constexpr int kPlotFilterMinSamples = 24;
+    // BrainFlow treats 0 as "use the default", and the Ganglion default is 15 s
+    // for both the BLE search and the wait for the first sample.
+    constexpr int kGanglionConnectTimeoutSec = 5;
+
+    BrainFlowInputParams MakeGanglionParams(const std::string& port, const std::string& mac) {
+        BrainFlowInputParams params;
+        params.timeout = kGanglionConnectTimeoutSec;
+        // Empty other_info makes BrainFlow decode every packet as firmware 3,
+        // and it ignores the version the dongle actually reports. A v2 board
+        // then stays near 0 uV. fw:auto uses the detected version.
+        params.other_info = "fw:auto";
+        if (!port.empty()) params.serial_port = port;
+        if (!mac.empty()) params.mac_address = mac;
+        return params;
+    }
+
+    // Same length that used to be a flat 2 s, which matched a ~3 Hz lower edge
+    // (order / 3 Hz). A 3 Hz board drops that edge to 1 Hz, so the tail is
+    // longer and must be scaled or it stays glued to the left of the plot.
+    int PlotFilterWarmupSamples(int fs, double lowHz)
+    {
+        const double flo = std::max(lowHz, 0.5);
+        const double seconds = static_cast<double>(kEEGFilterOrder) / flo;
+        const int n = static_cast<int>(std::ceil(seconds * static_cast<double>(fs)));
+        return std::max(kPlotFilterMinSamples, n);
+    }
 }
 
 void GanglionHandler::SetSSVEPWindow(float windowSeconds) {
@@ -36,8 +61,9 @@ void GanglionHandler::SetTargetFrequencies(const float hz[4]) {
     ssvepDetector.SetTargetFrequencies(hz);
 }
 
-void GanglionHandler::ApplySSVEPPlotFilters(float* y, int n, int samplingRate) {
+void GanglionHandler::ApplySSVEPPlotFilters(float* y, int n, int samplingRate, double lowHz, double highHz) {
     if (y == nullptr || n < kPlotFilterMinSamples || samplingRate <= 0) return;
+    if (!(highHz > lowHz)) return;
 
     std::vector<double> buf(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
@@ -47,14 +73,14 @@ void GanglionHandler::ApplySSVEPPlotFilters(float* y, int n, int samplingRate) {
     try {
         // Use the dynamically calculated bounds
         DataFilter::perform_bandpass(
-            buf.data(), n, samplingRate, plotBandLowHz, plotBandHighHz,
-            kPlotFilterOrder, (int)FilterTypes::BUTTERWORTH, 0.0);
+            buf.data(), n, samplingRate, lowHz, highHz,
+            kEEGFilterOrder, (int)FilterTypes::BUTTERWORTH, 0.0);
         DataFilter::perform_bandstop(
             buf.data(), n, samplingRate, 48.0, 52.0,
-            kPlotFilterOrder, (int)FilterTypes::BUTTERWORTH, 0.0);
+            kEEGFilterOrder, (int)FilterTypes::BUTTERWORTH, 0.0);
         DataFilter::perform_bandstop(
             buf.data(), n, samplingRate, 58.0, 62.0,
-            kPlotFilterOrder, (int)FilterTypes::BUTTERWORTH, 0.0);
+            kEEGFilterOrder, (int)FilterTypes::BUTTERWORTH, 0.0);
     }
     catch (const BrainFlowException& err) {
         std::cerr << "[BrainFlow Filter Error] " << err.what() << std::endl;
@@ -97,21 +123,27 @@ bool GanglionHandler::Connect(const std::string& port, const std::string& macAdd
     if (connected) return true;
     lastConnectError.clear();
 
+    // A failed attempt can leave GanglionLib holding the COM port. Drop it
+    // before opening again, or the replugged dongle is still busy.
+    if (board != nullptr) {
+        Disconnect();
+    }
+    else {
+        try {
+            BoardShim::release_all_sessions();
+        }
+        catch (...) {}
+    }
+
     try {
         BoardShim::enable_dev_board_logger();
         std::cout << "[BrainFlow] Connecting port='" << port << "' mac='" << macAddress << "'\n";
 
-        if (board == nullptr) {
-            struct BrainFlowInputParams params;
+        struct BrainFlowInputParams params = MakeGanglionParams(port, macAddress);
 
-            if (!port.empty()) params.serial_port = port;
-            if (!macAddress.empty()) params.mac_address = macAddress;
-
-            boardId = (int)BoardIds::GANGLION_BOARD;
-            samplingRate = BoardShim::get_sampling_rate(boardId);
-
-            board = new BoardShim(boardId, params);
-        }
+        boardId = (int)BoardIds::GANGLION_BOARD;
+        samplingRate = BoardShim::get_sampling_rate(boardId);
+        board = new BoardShim(boardId, params);
 
         if (!board->is_prepared()) {
             board->prepare_session();
@@ -140,22 +172,49 @@ bool GanglionHandler::Connect(const std::string& port, const std::string& macAdd
 
 void GanglionHandler::Disconnect() {
     if (board != nullptr) {
+        // stop_stream throws when the read thread has already exited. That used
+        // to skip release_session. BoardShim's destructor does not release
+        // either, so the native Ganglion session, the open COM port, and
+        // GanglionLib's process-lifetime state stayed alive. The next connect
+        // could not replace that session; only exiting the app could.
         try {
             if (board->is_prepared()) {
-                board->stop_stream();
-                board->release_session();
+                try {
+                    board->stop_stream();
+                }
+                catch (const BrainFlowException& err) {
+                    std::cerr << "[BrainFlow] stop_stream: " << err.what() << "\n";
+                }
+                try {
+                    board->release_session();
+                }
+                catch (const BrainFlowException& err) {
+                    std::cerr << "[BrainFlow] release_session: " << err.what() << "\n";
+                }
             }
+        }
+        catch (const BrainFlowException& err) {
+            std::cerr << "[BrainFlow] is_prepared: " << err.what() << "\n";
         }
         catch (...) {}
         delete board;
         board = nullptr;
     }
 
+    try {
+        BoardShim::release_all_sessions();
+    }
+    catch (const BrainFlowException& err) {
+        std::cerr << "[BrainFlow] release_all_sessions: " << err.what() << "\n";
+    }
+    catch (...) {}
+
     {
         std::lock_guard<std::mutex> lock(dataMutex);
         ClearEEGRingsLocked();
     }
     connected = false;
+    impedanceMode = false;
     std::cout << "[BrainFlow] Disconnected.\n";
 }
 
@@ -292,9 +351,13 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels, bool u
 EEGPlotSnapshot GanglionHandler::GetEEGPlotSnapshot() {
     EEGPlotSnapshot snap;
     int fs = 200;
+    double lowHz = plotBandLowHz;
+    double highHz = plotBandHighHz;
     {
         std::lock_guard<std::mutex> lock(dataMutex);
         fs = samplingRate > 0 ? samplingRate : 200;
+        lowHz = plotBandLowHz;
+        highHz = plotBandHighHz;
         snap.samplingRate = fs;
         for (int ch = 0; ch < 4; ++ch) {
             const EEGRing& ring = eegRings[ch];
@@ -310,18 +373,22 @@ EEGPlotSnapshot GanglionHandler::GetEEGPlotSnapshot() {
     }
 
     // Causal Butterworth restarts at rest on whatever window we pass in, so the
-    // leftmost samples always show a settling spike. Drop that warmup; the ring
-    // keeps extra raw history so the visible window still slides ~5 s.
-    const int warmup = std::max(kPlotFilterMinSamples, fs * 2); // 
+    // leftmost samples always show a settling wave. That tail gets longer as
+    // the lower cutoff drops, so the discarded prefix scales with it. Then
+    // keep only the latest display window.
+    const int warmup = std::min(kEEGFilterWarmupCapacity, PlotFilterWarmupSamples(fs, lowHz));
     const int minKeep = std::max(kPlotFilterMinSamples, fs);    // keep >= ~1 s
 
     for (int ch = 0; ch < 4; ++ch) {
         const int n = snap.count[ch];
-        ApplySSVEPPlotFilters(snap.y[ch].data(), n, fs);
+        ApplySSVEPPlotFilters(snap.y[ch].data(), n, fs, lowHz, highHz);
 
         int skip = 0;
         if (n > minKeep) {
             skip = std::min(warmup, n - minKeep);
+        }
+        if (n - skip > kEEGPlotDisplayCapacity) {
+            skip = n - kEEGPlotDisplayCapacity;
         }
         if (skip > 0) {
             const int kept = n - skip;
@@ -415,17 +482,21 @@ void GanglionHandler::TrySSVEPDetect(const bool enabled[4]) {
 
 bool GanglionHandler::StartImpedanceMode(const std::string& port, const std::string& macAddress) {
     lastConnectError.clear();
-    if (board == nullptr) {
-        struct BrainFlowInputParams params;
-
-        if (!port.empty()) params.serial_port = port;
-        if (!macAddress.empty()) params.mac_address = macAddress;
-
-        boardId = (int)BoardIds::GANGLION_BOARD;
-        samplingRate = BoardShim::get_sampling_rate(boardId);
-
-        board = new BoardShim(boardId, params);
+    if (board != nullptr) {
+        Disconnect();
     }
+    else {
+        try {
+            BoardShim::release_all_sessions();
+        }
+        catch (...) {}
+    }
+
+    struct BrainFlowInputParams params = MakeGanglionParams(port, macAddress);
+
+    boardId = (int)BoardIds::GANGLION_BOARD;
+    samplingRate = BoardShim::get_sampling_rate(boardId);
+    board = new BoardShim(boardId, params);
 
     try {
         board->prepare_session();
@@ -439,6 +510,7 @@ bool GanglionHandler::StartImpedanceMode(const std::string& port, const std::str
     catch (const BrainFlowException& err) {
         lastConnectError = err.what() ? err.what() : "Unknown BrainFlow error";
         std::cerr << "[BrainFlow] Failed to start impedance check: " << lastConnectError << std::endl;
+        Disconnect();
         return false;
     }
 }

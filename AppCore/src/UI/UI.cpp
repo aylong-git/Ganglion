@@ -271,6 +271,21 @@ bool UIManager::Initialize() {
         ImFontConfig keyCfg = fontConfig;
         SSVEPKeyFont = io.Fonts->AddFontFromFileTTF(
             GetAssetPath("Nunito-ExtraBold.ttf").c_str(), 32.0f * scaleFactor, &keyCfg);
+#if defined(_WIN32)
+        // Nunito has the punctuation captions, but not the four short arrows.
+        // Merge only U+2190..U+2193 from Segoe UI so those glyphs actually draw.
+        if (SSVEPKeyFont != nullptr) {
+            static const ImWchar kArrowRange[] = { 0x2190, 0x2193, 0 };
+            ImFontConfig arrowCfg = keyCfg;
+            arrowCfg.MergeMode = true;
+            arrowCfg.PixelSnapH = true;
+            char winDir[MAX_PATH] = {};
+            if (GetWindowsDirectoryA(winDir, MAX_PATH) > 0) {
+                const std::string arrowFont = std::string(winDir) + "\\Fonts\\segoeui.ttf";
+                io.Fonts->AddFontFromFileTTF(arrowFont.c_str(), 32.0f * scaleFactor, &arrowCfg, kArrowRange);
+            }
+        }
+#endif
     }
     if (fonts.empty()) {
         io.Fonts->AddFontDefault(); // Fallback
@@ -556,6 +571,90 @@ void DrawSlideToggle(const char* id, bool* value, float dpi) {
     draw->AddCircleFilled(ImVec2(knobX, knobY), knobR, IM_COL32(255, 255, 255, 255));
 }
 
+void DrawSSVEPCalibrationTab(const SSVEPBoardLayout& layout, float dpi)
+{
+    const float btnW = 120.0f * dpi;
+    const float bottomH = ImGui::GetFrameHeight() + 12.0f * dpi;
+    const float panelsH = std::max(0.0f, ImGui::GetContentRegionAvail().y - bottomH);
+    const float panelH = panelsH / static_cast<float>(kSSVEPBoardCount);
+
+    int flicker[kSSVEPFlickerBoardCount];
+    for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) flicker[i] = i;
+    std::sort(flicker, flicker + kSSVEPFlickerBoardCount, [&](int a, int b) {
+        if (layout.customHz[a] != layout.customHz[b]) return layout.customHz[a] < layout.customHz[b];
+        return a < b;
+    });
+    int order[kSSVEPBoardCount];
+    order[0] = kSSVEPNullBoard;
+    for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) order[i + 1] = flicker[i];
+
+    for (int row = 0; row < kSSVEPBoardCount; ++row) {
+        const int board = order[row];
+        ImGui::PushID(board);
+        ImGui::BeginChild("##SSVEPCalPanel", ImVec2(0.0f, panelH), true);
+        const float innerH = std::max(1.0f, ImGui::GetContentRegionAvail().y);
+        if (ImGui::Button("Calibration", ImVec2(btnW, innerH))) {
+        }
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        char title[64];
+        if (SSVEPBoardIsNull(board)) {
+            snprintf(title, sizeof(title), "Null");
+        }
+        else {
+            snprintf(title, sizeof(title), "%.1f Hz", layout.customHz[board]);
+        }
+        ImGui::TextUnformatted(title);
+        const ImVec2 plotSize(
+            std::max(1.0f, ImGui::GetContentRegionAvail().x),
+            std::max(1.0f, ImGui::GetContentRegionAvail().y));
+        if (ImPlot::BeginPlot("##SSVEPCalPlot", plotSize, ImPlotFlags_NoLegend | ImPlotFlags_NoMenus)) {
+            ImPlot::SetupAxes("Time (s)", "\xC2\xB5V\xC2\xB2");
+            ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 5.0, ImPlotCond_Always);
+            ImPlot::EndPlot();
+        }
+        ImGui::EndGroup();
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+
+    const char* allLabel = "Calibrate All";
+    const float allW = 160.0f * dpi;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - allW) * 0.5f));
+    if (ImGui::Button(allLabel, ImVec2(allW, 0.0f))) {
+    }
+}
+
+void DrawSSVEPFixation(ImDrawList* draw, ImVec2 topLeft, float side, float signal)
+{
+    const float radius = side * kSSVEPFixationDiameterFrac * 0.5f;
+    if (!draw || radius < 0.75f) return;
+
+    const ImVec2 center(topLeft.x + side * 0.5f, topLeft.y + side * 0.5f);
+    // Hard swap at the board rate. Blending the two colors would turn the center purple.
+    const bool normal = signal >= 0.5f;
+    const ImU32 red = IM_COL32(255, 0, 0, 255);
+    const ImU32 blue = IM_COL32(0, 0, 255, 255);
+    const ImU32 outer = normal ? blue : red;
+    const ImU32 inner = normal ? red : blue;
+    const float innerRadius = radius * 0.5f;
+    constexpr int kSegments = 24;
+    const float thickness = std::max(1.0f, radius * 0.12f);
+    const float outerStroke = radius - thickness * 0.5f;
+    const ImU32 line = IM_COL32(0, 0, 0, 255);
+    const ImDrawListFlags flags = draw->Flags;
+    draw->Flags = flags & ~ImDrawListFlags_AntiAliasedFill;
+    draw->AddCircleFilled(center, radius, outer, kSegments);
+    draw->AddCircleFilled(center, innerRadius, inner, kSegments);
+    draw->Flags = flags;
+    draw->AddCircle(center, outerStroke, line, kSegments, thickness);
+    draw->AddCircle(center, innerRadius, line, kSegments, thickness);
+    draw->AddLine(ImVec2(center.x - outerStroke, center.y), ImVec2(center.x - innerRadius, center.y), line, thickness);
+    draw->AddLine(ImVec2(center.x + innerRadius, center.y), ImVec2(center.x + outerStroke, center.y), line, thickness);
+    draw->AddLine(ImVec2(center.x, center.y - outerStroke), ImVec2(center.x, center.y - innerRadius), line, thickness);
+    draw->AddLine(ImVec2(center.x, center.y + innerRadius), ImVec2(center.x, center.y + outerStroke), line, thickness);
+}
+
 void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dpi, ImFont* keyFont,
     SSVEPBoardLayout* layout, bool* layoutInit, float monitorW, float monitorH,
     int refreshHz, std::uint64_t frame, unsigned int patternTex, unsigned int patternInvTex) {
@@ -588,24 +687,26 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
     const float lw = (artLong.w > 0) ? static_cast<float>(artLong.w) : 388.0f;
     const float lh = (artLong.h > 0) ? static_cast<float>(artLong.h) : 244.0f;
 
-    float sides[4];
-    float footprints[4];
-    for (int i = 0; i < 4; ++i) {
+    float sides[kSSVEPBoardCount];
+    float footprints[kSSVEPBoardCount];
+    for (int i = 0; i < kSSVEPBoardCount; ++i) {
         layout->sizeFrac[i] = ClampedBoardSizeFrac(layout->sizeFrac[i]);
         sides[i] = std::max(8.0f, monSize.x * layout->sizeFrac[i]);
         float dw = 0.0f, dh = 0.0f;
         KeyIconCatalog::DisplaySize(lw, lh, sides[i], lw, lh, dw, dh);
-        footprints[i] = sides[i] + iconGap + dh;
+        footprints[i] = SSVEPBoardIsNull(i) ? sides[i] : (sides[i] + iconGap + dh);
     }
 
     if (!*layoutInit) {
-        const ImVec2 defaults[4] = {
+        const ImVec2 defaults[kSSVEPBoardCount] = {
             ImVec2(monOrigin.x + inset, monOrigin.y + inset),
             ImVec2(monOrigin.x + monSize.x - inset - sides[1], monOrigin.y + inset),
             ImVec2(monOrigin.x + inset, monOrigin.y + monSize.y - inset - footprints[2]),
-            ImVec2(monOrigin.x + monSize.x - inset - sides[3], monOrigin.y + monSize.y - inset - footprints[3])
+            ImVec2(monOrigin.x + monSize.x - inset - sides[3], monOrigin.y + monSize.y - inset - footprints[3]),
+            ImVec2(monOrigin.x + 0.5f * (monSize.x - sides[kSSVEPNullBoard]),
+                monOrigin.y + 0.5f * (monSize.y - footprints[kSSVEPNullBoard]))
         };
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < kSSVEPBoardCount; ++i) {
             layout->nx[i] = (defaults[i].x - monOrigin.x) / monSize.x;
             layout->ny[i] = (defaults[i].y - monOrigin.y) / monSize.y;
         }
@@ -619,11 +720,11 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
     draw->AddRectFilled(monOrigin, monMax, IM_COL32(245, 245, 245, 70));
     draw->AddRect(monOrigin, monMax, IM_COL32(70, 70, 70, 255), 0.0f, 0, 5.0f * dpi);
 
-    ImVec2 corners[4];
+    ImVec2 corners[kSSVEPBoardCount];
     const ImVec2 backupCursorPos = ImGui::GetCursorPos();
     const float xMin = monOrigin.x;
     const float yMin = monOrigin.y;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kSSVEPBoardCount; ++i) {
         const float xMax = monOrigin.x + std::max(0.0f, monSize.x - sides[i]);
         const float yMax = monOrigin.y + std::max(0.0f, monSize.y - footprints[i]);
         float x = monOrigin.x + layout->nx[i] * monSize.x;
@@ -726,26 +827,34 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
                     proposed = std::max(brX - mp.x, brY - mp.y);
                     maxAllowed = std::min(maxAllowed, brX - monOrigin.x);
                     maxAllowed = std::min(maxAllowed, brY - monOrigin.y);
-                    maxAllowed = std::min(maxAllowed, std::max(8.0f, (monOrigin.y + monSize.y - brY - iconGap) / iconK));
+                    if (!SSVEPBoardIsNull(i)) {
+                        maxAllowed = std::min(maxAllowed, std::max(8.0f, (monOrigin.y + monSize.y - brY - iconGap) / iconK));
+                    }
                 } else if (c == 1) { // Dragging Top-Right, anchored at Bottom-Left
                     float blX = corners[i].x;
                     float blY = corners[i].y + sides[i];
                     proposed = std::max(mp.x - blX, blY - mp.y);
                     maxAllowed = std::min(maxAllowed, (monOrigin.x + monSize.x) - blX);
                     maxAllowed = std::min(maxAllowed, blY - monOrigin.y);
-                    maxAllowed = std::min(maxAllowed, std::max(8.0f, (monOrigin.y + monSize.y - blY - iconGap) / iconK));
+                    if (!SSVEPBoardIsNull(i)) {
+                        maxAllowed = std::min(maxAllowed, std::max(8.0f, (monOrigin.y + monSize.y - blY - iconGap) / iconK));
+                    }
                 } else if (c == 2) { // Dragging Bottom-Left, anchored at Top-Right
                     float trX = corners[i].x + sides[i];
                     float trY = corners[i].y;
                     proposed = std::max(trX - mp.x, mp.y - trY);
                     maxAllowed = std::min(maxAllowed, trX - monOrigin.x);
-                    maxAllowed = std::min(maxAllowed, std::max(8.0f, (monOrigin.y + monSize.y - trY - iconGap) / (1.0f + iconK)));
+                    if (!SSVEPBoardIsNull(i)) {
+                        maxAllowed = std::min(maxAllowed, std::max(8.0f, (monOrigin.y + monSize.y - trY - iconGap) / (1.0f + iconK)));
+                    }
                 } else { // Dragging Bottom-Right, anchored at Top-Left
                     float tlX = corners[i].x;
                     float tlY = corners[i].y;
                     proposed = std::max(mp.x - tlX, mp.y - tlY);
                     maxAllowed = std::min(maxAllowed, (monOrigin.x + monSize.x) - tlX);
-                    maxAllowed = std::min(maxAllowed, std::max(8.0f, (monOrigin.y + monSize.y - tlY - iconGap) / (1.0f + iconK)));
+                    if (!SSVEPBoardIsNull(i)) {
+                        maxAllowed = std::min(maxAllowed, std::max(8.0f, (monOrigin.y + monSize.y - tlY - iconGap) / (1.0f + iconK)));
+                    }
                 }
                 
                 const float minSide = std::min(maxAllowed, std::max(8.0f, monSize.x * 0.04f));
@@ -800,46 +909,64 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
 
         double timeNow = glfwGetTime();
 
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < kSSVEPBoardCount; ++i) {
             const ImVec2 a = corners[i];
             const ImVec2 b = ImVec2(a.x + sides[i], a.y + sides[i]);
+            const bool nullBoard = SSVEPBoardIsNull(i);
+            const ImU32 nullFill = IM_COL32(212, 168, 55, 90);
+            const ImU32 nullEdge = IM_COL32(184, 134, 11, 255);
             if (!layout->visible[i]) {
-                draw->AddRect(a, b, IM_COL32(160, 160, 160, 160), 0.0f, 0, 1.5f * dpi);
+                if (nullBoard) {
+                    draw->AddRectFilled(a, b, IM_COL32(212, 168, 55, 40));
+                    draw->AddRect(a, b, nullEdge, 0.0f, 0, 2.5f * dpi);
+                }
+                else {
+                    draw->AddRect(a, b, IM_COL32(160, 160, 160, 160), 0.0f, 0, 1.5f * dpi);
+                }
                 continue;
             }
 
-            // 1. Time-Based Absolute Frequency Math
-            bool contrast = SSVEPPatternHasContrast(layout->patternMode) && layout->contrastMode;
-            double screenTarget = contrast ? (static_cast<double>(layout->customHz[i]) / 2.0) : static_cast<double>(layout->customHz[i]);
-            double phase = std::fmod(timeNow * screenTarget, 1.0);
-            bool on = phase < 0.5;
-            
-            // 2. Alpha Interpolation
-            float alpha = on ? 1.0f : 0.0f;
-            if (layout->smoothMode) {
-                alpha = 0.5f - 0.5f * static_cast<float>(std::cos(2.0 * 3.14159265358979 * phase));
+            const bool contrast = !nullBoard && SSVEPPatternHasContrast(layout->patternMode) && layout->contrastMode;
+            double screenTarget = 0.0;
+            double phase = 0.0;
+            float alpha = 1.0f;
+            if (!nullBoard) {
+                screenTarget = contrast ? (static_cast<double>(layout->customHz[i]) / 2.0) : static_cast<double>(layout->customHz[i]);
+                phase = std::fmod(timeNow * screenTarget, 1.0);
+                const bool on = phase < 0.5;
+                alpha = on ? 1.0f : 0.0f;
+                if (layout->smoothMode) {
+                    alpha = 0.5f - 0.5f * static_cast<float>(std::cos(2.0 * 3.14159265358979 * phase));
+                }
+            }
+
+            if (nullBoard) {
+                draw->AddRectFilled(a, b, nullFill);
             }
 
             ImU8 aVal = static_cast<ImU8>(alpha * 255.0f);
-            ImU8 invVal = static_cast<ImU8>((1.0f - alpha) * 255.0f);
 
             // 3. Texture / Contrast Reversal Drawing
             if (SSVEPPatternHasContrast(layout->patternMode) && patternTex) {
                 if (contrast && patternInvTex) {
-                    draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, aVal));
-                    draw->AddImage((ImTextureID)(intptr_t)patternInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, invVal));
+                    const ImU8 mixA = aVal;
+                    // Opaque inverse underneath, normal image on top. That is a
+                    // true blend, so a white square stays white instead of gray.
+                    draw->AddImage((ImTextureID)(intptr_t)patternInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255));
+                    draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, mixA));
                 } else {
                     draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(aVal, aVal, aVal, 255));
                 }
             } else {
                 draw->AddRectFilled(a, b, IM_COL32(aVal, aVal, aVal, 255));
             }
-            draw->AddRect(a, b, IM_COL32(80, 80, 80, 255));
+            draw->AddRect(a, b, nullBoard ? nullEdge : IM_COL32(80, 80, 80, 255), 0.0f, 0, nullBoard ? 2.5f * dpi : 1.0f);
+            DrawSSVEPFixation(draw, a, sides[i], alpha);
         }
 
         auto& inputMgr = InputManager::GetInstance();
-        for (int i = 0; i < 4; ++i) {
-            if (!layout->visible[i]) continue;
+        for (int i = 0; i < kSSVEPBoardCount; ++i) {
+            if (!layout->visible[i] || SSVEPBoardIsNull(i)) continue;
             const ImGuiKey key = inputMgr.GetKey(i);
             const auto kind = KeyIconCatalog::KindFor(key);
             const KeyArt* art = nullptr;
@@ -878,18 +1005,24 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
                 draw->AddText(font, fontSize, tp, IM_COL32(26, 26, 26, 255), caption.c_str());
             }
         }
-        for (int i = 0; i < 4; ++i) drawVisButton(i);
-        for (int i = 0; i < 4; ++i) resizeBoard(i);
+        for (int i = 0; i < kSSVEPBoardCount; ++i) drawVisButton(i);
+        for (int i = 0; i < kSSVEPBoardCount; ++i) resizeBoard(i);
         ImGui::SetCursorPos(backupCursorPos);
         draw->PopClipRect();
         return;
     }
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kSSVEPBoardCount; ++i) {
         const ImVec2 a = corners[i];
         const ImVec2 b = ImVec2(a.x + sides[i], a.y + sides[i]);
-        const ImU32 col = layout->visible[i] ? IM_COL32(180, 180, 180, 255) : IM_COL32(140, 140, 140, 140);
-        draw->AddRect(a, b, col);
+        if (SSVEPBoardIsNull(i)) {
+            draw->AddRectFilled(a, b, IM_COL32(212, 168, 55, layout->visible[i] ? 110 : 50));
+            draw->AddRect(a, b, IM_COL32(184, 134, 11, layout->visible[i] ? 255 : 160), 0.0f, 0, 2.5f * dpi);
+        }
+        else {
+            const ImU32 col = layout->visible[i] ? IM_COL32(180, 180, 180, 255) : IM_COL32(140, 140, 140, 140);
+            draw->AddRect(a, b, col);
+        }
     }
     draw->PopClipRect();
 
@@ -900,10 +1033,19 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
     const float btnH = ImGui::GetFrameHeight();
     const float inputW = 36.0f * dpi;
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kSSVEPBoardCount; ++i) {
         const ImVec2 center = ImVec2(corners[i].x + sides[i] * 0.5f, corners[i].y + sides[i] * 0.5f);
-        ImGui::SetCursorScreenPos(ImVec2(center.x - btnW * 0.5f, center.y - btnH * 0.5f));
         ImGui::PushID(i);
+        if (SSVEPBoardIsNull(i)) {
+            const char* nullLabel = "Null";
+            const ImVec2 labelSize = ImGui::CalcTextSize(nullLabel);
+            const ImVec2 labelPos(center.x - labelSize.x * 0.5f, center.y - labelSize.y * 0.5f);
+            ImGui::GetWindowDrawList()->AddText(labelPos, IM_COL32(92, 64, 8, 255), nullLabel);
+            ImGui::PopID();
+            drawVisButton(i);
+            continue;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(center.x - btnW * 0.5f, center.y - btnH * 0.5f));
 
         const bool thisBinding = (inputMgr.GetBindingBoard() == i);
         const bool otherBinding = inputMgr.IsBinding() && !thisBinding;
@@ -965,8 +1107,8 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
         // Apply the narrower width
         ImGui::SetNextItemWidth(inputW);
         if (ImGui::InputFloat("##freqInput", &layout->customHz[i], 0.0f, 0.0f, "%.1f", ImGuiInputTextFlags_CharsDecimal)) {
-            // Clamp to requested 5 - 30 Hz range
-            layout->customHz[i] = std::clamp(layout->customHz[i], 5.0f, 30.0f);
+            // Clamp to requested 1 - 30 Hz range
+            layout->customHz[i] = std::clamp(layout->customHz[i], 1.0f, 30.0f);
         }
         
         ImGui::SameLine(0, 4.0f * dpi);
@@ -977,7 +1119,7 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
         ImGui::PopID();
         drawVisButton(i);
     }
-    for (int i = 0; i < 4; ++i) resizeBoard(i);
+    for (int i = 0; i < kSSVEPBoardCount; ++i) resizeBoard(i);
     ImGui::SetCursorPos(backupCursorPos);
 }
 
@@ -1054,13 +1196,13 @@ bool DrawSSVEPTestScreen(float dpi, ImFont* keyFont, const SSVEPBoardLayout& lay
         }
 
         ImU8 aVal = static_cast<ImU8>(alpha * 255.0f);
-        ImU8 invVal = static_cast<ImU8>((1.0f - alpha) * 255.0f);
 
         // 3. Texture / Contrast Reversal Drawing
         if (SSVEPPatternHasContrast(layout.patternMode) && patternTex) {
             if (contrast && patternInvTex) {
-                draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, aVal));
-                draw->AddImage((ImTextureID)(intptr_t)patternInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, invVal));
+                const ImU8 mixA = aVal;
+                draw->AddImage((ImTextureID)(intptr_t)patternInvTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255));
+                draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, mixA));
             } else {
                 draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0,0), ImVec2(1,1), IM_COL32(aVal, aVal, aVal, 255));
             }
@@ -1069,6 +1211,7 @@ bool DrawSSVEPTestScreen(float dpi, ImFont* keyFont, const SSVEPBoardLayout& lay
         }
 
         draw->AddRect(a, b, IM_COL32(80, 80, 80, 255));
+        DrawSSVEPFixation(draw, a, side, alpha);
     }
 
     for (int i = 0; i < 4; ++i) {
@@ -1987,7 +2130,7 @@ void UIManager::RenderUI() {
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - groupW) * 0.5f));
 
                 if (ImGui::Button(hideAllLabel, hideAllSize)) {
-                    for (int i = 0; i < 4; ++i) {
+                    for (int i = 0; i < kSSVEPBoardCount; ++i) {
                         SSVEPBoardLayout.visible[i] = false;
                     }
                 }
@@ -2008,7 +2151,7 @@ void UIManager::RenderUI() {
                     SSVEPBoardLayoutInit = false; 
                     
                     // 2. Reset Box Sizes to default (0.10f)
-                    for (int i = 0; i < 4; ++i) {
+                    for (int i = 0; i < kSSVEPBoardCount; ++i) {
                         SSVEPBoardLayout.sizeFrac[i] = 0.10f;
                     }
                     
@@ -2062,6 +2205,11 @@ void UIManager::RenderUI() {
             ImGui::EndChild();
 
             ImGui::EndTabItem();
+                }
+
+                if (ImGui::BeginTabItem("Calibration")) {
+                    DrawSSVEPCalibrationTab(SSVEPBoardLayout, m_dpiScale);
+                    ImGui::EndTabItem();
                 }
 
                 ImGui::EndTabBar();
@@ -2280,10 +2428,10 @@ void UIManager::RenderUI() {
                         // ==================================================
                         // Map the 3D model node names to their corresponding array indices
                         int chanIdx = -1;
-                        if (targetObj->name == "Fp1")      chanIdx = 0;
-                        else if (targetObj->name == "Fp2") chanIdx = 1;
-                        else if (targetObj->name == "T3")  chanIdx = 2;
-                        else if (targetObj->name == "T4")  chanIdx = 3;
+                        if (targetObj->name == "PO7")      chanIdx = 0;
+                        else if (targetObj->name == "O1") chanIdx = 1;
+                        else if (targetObj->name == "O2")  chanIdx = 2;
+                        else if (targetObj->name == "PO8")  chanIdx = 3;
                         else if (targetObj->name == "A2")  chanIdx = 4;
 
                         if (chanIdx != -1) {

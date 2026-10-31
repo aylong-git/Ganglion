@@ -25,6 +25,10 @@ void HudOverlayApplyPlatformNoActivate(GLFWwindow* window, GLFWwindow* /*ownerWi
 
 void HudOverlaySetVisibleRegion(GLFWwindow*, int, int, int, int, int, int, const unsigned char*, int, int) {}
 
+void HudOverlayShowNoActivate(GLFWwindow* window) {
+    if (window) glfwShowWindow(window);
+}
+
 void HudOverlayKeepOnTop(GLFWwindow* window) {
     if (!window) return;
     NSWindow* nsWindow = glfwGetCocoaWindow(window);

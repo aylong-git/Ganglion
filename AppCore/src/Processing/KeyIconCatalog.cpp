@@ -96,10 +96,21 @@ std::string KeyIconCatalog::Caption(ImGuiKey key) {
     case ImGuiKey_End: return "END";
     case ImGuiKey_PageUp: return "PGUP";
     case ImGuiKey_PageDown: return "PGDN";
-    case ImGuiKey_UpArrow: return "UP";
-    case ImGuiKey_DownArrow: return "DN";
-    case ImGuiKey_LeftArrow: return "LT";
-    case ImGuiKey_RightArrow: return "RT";
+    case ImGuiKey_UpArrow: return "\xE2\x86\x91";    // U+2191 ↑
+    case ImGuiKey_DownArrow: return "\xE2\x86\x93";  // U+2193 ↓
+    case ImGuiKey_LeftArrow: return "\xE2\x86\x90";  // U+2190 ←
+    case ImGuiKey_RightArrow: return "\xE2\x86\x92"; // U+2192 →
+    case ImGuiKey_GraveAccent: return "`";
+    case ImGuiKey_Minus: return "-";
+    case ImGuiKey_Equal: return "=";
+    case ImGuiKey_LeftBracket: return "[";
+    case ImGuiKey_RightBracket: return "]";
+    case ImGuiKey_Backslash: return "\\";
+    case ImGuiKey_Semicolon: return ";";
+    case ImGuiKey_Apostrophe: return "'";
+    case ImGuiKey_Comma: return ",";
+    case ImGuiKey_Period: return ".";
+    case ImGuiKey_Slash: return "/";
     case ImGuiKey_Keypad0: return "0";
     case ImGuiKey_Keypad1: return "1";
     case ImGuiKey_Keypad2: return "2";

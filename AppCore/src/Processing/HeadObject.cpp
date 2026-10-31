@@ -156,7 +156,7 @@ void HeadObject::InitModel(const std::string& objFilePath, const std::string& mt
         SubObject obj;
         obj.id = static_cast<int>(s) + 1;
         obj.name = shapes[s].name;
-        if (obj.name == "head_object" or obj.name == "headband") {
+        if (obj.name == "head" or obj.name == "headband") {
             obj.isSelectable = false;
             obj.description = "";
         }

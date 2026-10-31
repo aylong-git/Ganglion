@@ -7,11 +7,20 @@
 #endif
 
 inline constexpr float kSSVEPTargetHz[4] = {
-    7.0f,
+    11.0f,
     13.0f,
     15.0f,
     17.0f
 };
+
+inline constexpr int kSSVEPFlickerBoardCount = 4;
+inline constexpr int kSSVEPNullBoard = 4;
+inline constexpr int kSSVEPBoardCount = 5;
+
+inline bool SSVEPBoardIsNull(int board)
+{
+    return board == kSSVEPNullBoard;
+}
 
 // Plot bandpass around the board frequencies: lowest minus 2 Hz,
 // and the second harmonic of the highest plus 2 Hz.
@@ -48,6 +57,10 @@ inline float SSVEPSineAlpha(double timeSec, float targetHz)
 
     return static_cast<float>((sineValue + 1.0) * 0.5);
 }
+
+// checkerboard.png is 5 cells across the board. The fixation dot's diameter
+// is half of one cell, and every pattern uses that same size.
+inline constexpr float kSSVEPFixationDiameterFrac = 0.5f / 5.0f;
 
 inline bool SSVEPSquareOn(double timeSec, float targetHz)
 {

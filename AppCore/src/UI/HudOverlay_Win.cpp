@@ -37,8 +37,9 @@ void HudOverlayApplyPlatformNoActivate(GLFWwindow* window, GLFWwindow* /*ownerWi
     ex &= ~WS_EX_APPWINDOW;
     SetWindowLongPtr(hwnd, GWL_EXSTYLE, ex);
     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_NOZORDER);
+    // Do not show here. The window is still a full rectangle, and Windows
+    // paints the empty cartoon slot black until a region clips it away.
 
     ITaskbarList* taskbar = nullptr;
     if (SUCCEEDED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER,
@@ -52,10 +53,17 @@ void HudOverlayApplyPlatformNoActivate(GLFWwindow* window, GLFWwindow* /*ownerWi
     EnablePerPixelAlpha(hwnd);
 }
 
+void HudOverlayShowNoActivate(GLFWwindow* window) {
+    if (!window) return;
+    HWND hwnd = glfwGetWin32Window(window);
+    if (!hwnd) return;
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+}
+
 void HudOverlaySetVisibleRegion(GLFWwindow* window, int boardIndex, int square,
     int iconX, int iconY, int iconW, int iconH,
     const unsigned char* opaque, int srcW, int srcH) {
-    if (!window || boardIndex < 0 || boardIndex > 3) return;
+    if (!window || boardIndex < 0 || boardIndex >= kSSVEPBoardCount) return;
     HWND hwnd = glfwGetWin32Window(window);
     if (!hwnd || square <= 0) return;
 
@@ -66,14 +74,13 @@ void HudOverlaySetVisibleRegion(GLFWwindow* window, int boardIndex, int square,
         const unsigned char* opaque = nullptr;
         int srcW = 0, srcH = 0;
     };
-    static Key cache[4];
+    static Key cache[kSSVEPBoardCount];
     Key& prev = cache[boardIndex];
     if (prev.window == window && prev.square == square
         && prev.x == iconX && prev.y == iconY && prev.w == iconW && prev.h == iconH
         && prev.opaque == opaque && prev.srcW == srcW && prev.srcH == srcH) {
         return;
     }
-    prev = { window, square, iconX, iconY, iconW, iconH, opaque, srcW, srcH };
 
     HRGN shape = CreateRectRgn(0, 0, square, square);
     const bool haveIcon = opaque && srcW > 0 && srcH > 0 && iconW > 0 && iconH > 0;
@@ -101,8 +108,12 @@ void HudOverlaySetVisibleRegion(GLFWwindow* window, int boardIndex, int square,
             }
         }
     }
-    // SetWindowRgn takes ownership of shape.
-    SetWindowRgn(hwnd, shape, TRUE);
+    // SetWindowRgn takes ownership of shape only when it succeeds.
+    if (!SetWindowRgn(hwnd, shape, TRUE)) {
+        DeleteObject(shape);
+        return;
+    }
+    prev = { window, square, iconX, iconY, iconW, iconH, opaque, srcW, srcH };
 }
 
 void HudOverlayKeepOnTop(GLFWwindow* window) {

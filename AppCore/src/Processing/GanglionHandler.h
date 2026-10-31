@@ -14,8 +14,11 @@
 class EEGRecorder;
 
 static constexpr int kEEGPlotDisplayCapacity = 1000; // ~5 s at 200 Hz shown in Signal
-// Extra raw samples so IIR bandpass/notch can settle before the visible window.
-static constexpr int kEEGFilterWarmupCapacity = 400; // ~1 s at 200 Hz
+// Order-6 Butterworth startup lasts about (order / low_cutoff) seconds.
+// The plot edge can fall to 0.5 Hz, which needs ~12 s. The visible window
+// still shows the latest ~5 s after that prefix is dropped.
+static constexpr int kEEGFilterOrder = 6;
+static constexpr int kEEGFilterWarmupCapacity = 12 * 200;
 static constexpr int kEEGPlotCapacity = kEEGPlotDisplayCapacity + kEEGFilterWarmupCapacity;
 
 struct EEGPlotSnapshot {
@@ -64,7 +67,7 @@ private:
         bool hadData = false;
     };
 
-    void ApplySSVEPPlotFilters(float* y, int n, int samplingRate);
+    void ApplySSVEPPlotFilters(float* y, int n, int samplingRate, double lowHz, double highHz);
     void ClearEEGRingsLocked();
     void PushEEGSample(int channel, float timeSec, float valueUv);
     void TrySSVEPDetect(const bool enabled[4]);

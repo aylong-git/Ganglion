@@ -47,9 +47,29 @@ int main() {
 
             // 1. Handle UI Button Presses
             if (uiManager.reqConnect || uiManager.reqImpedanceCheck) {
+                const bool wantConnect = uiManager.reqConnect;
+                uiManager.reqConnect = false;
+                uiManager.reqImpedanceCheck = false;
+
+                const std::string previousPort = (uiManager.selectedPortIdx >= 0
+                    && uiManager.selectedPortIdx < static_cast<int>(uiManager.availablePorts.size()))
+                    ? uiManager.availablePorts[uiManager.selectedPortIdx] : "";
+                uiManager.UpdateAvailablePorts();
+                int portIdx = -1;
+                for (int i = 0; i < static_cast<int>(uiManager.availablePorts.size()); ++i) {
+                    if (uiManager.availablePorts[i] == previousPort) {
+                        portIdx = i;
+                        break;
+                    }
+                }
+                if (portIdx < 0 && uiManager.availablePorts.size() == 1
+                    && uiManager.availablePorts[0] != "No Dongle Found") {
+                    portIdx = 0;
+                }
+                if (portIdx >= 0) uiManager.selectedPortIdx = portIdx;
+
                 std::string port;
                 std::string mac = uiManager.macAddress;
-                const int portIdx = uiManager.selectedPortIdx;
                 if (portIdx >= 0 && portIdx < static_cast<int>(uiManager.availablePorts.size())) {
                     port = uiManager.availablePorts[portIdx];
                 }
@@ -61,7 +81,7 @@ int main() {
                     uiManager.portErrorMessage = "No dongle port selected. Plug in the USB dongle and click Refresh.";
                 }
                 else {
-                    success = (uiManager.reqConnect) ? ganglionBoard.Connect(port, mac) : ganglionBoard.StartImpedanceMode(port, mac);
+                    success = wantConnect ? ganglionBoard.Connect(port, mac) : ganglionBoard.StartImpedanceMode(port, mac);
                     if (!success) {
                         const std::string detail = ganglionBoard.LastConnectError();
                         uiManager.portErrorMessage = "Failed to open " + port +
@@ -70,7 +90,7 @@ int main() {
                 }
 
                 if (success) {
-                    if (uiManager.reqConnect) {
+                    if (wantConnect) {
                         uiManager.isConnected = true;
                     }
                     else {
@@ -83,8 +103,6 @@ int main() {
                     uiManager.showPortErrorPopup = true;
                     ganglionBoard.Disconnect();
                 }
-                uiManager.reqConnect = false;
-                uiManager.reqImpedanceCheck = false;
             }
 
             if (uiManager.reqDisconnect) {

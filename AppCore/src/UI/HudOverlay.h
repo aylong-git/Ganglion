@@ -7,11 +7,11 @@ struct GLFWwindow;
 // Top-left of each flicker square, as a fraction of the SSVEP panel
 // (and of the HUD monitor).
 struct SSVEPBoardLayout {
-    float nx[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    float ny[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    float sizeFrac[4] = { 0.10f, 0.10f, 0.10f, 0.10f }; // each square as a fraction of monitor width
-    bool visible[4] = { true, true, true, true };
-    float customHz[4] = {
+    float nx[kSSVEPBoardCount] = {};
+    float ny[kSSVEPBoardCount] = {};
+    float sizeFrac[kSSVEPBoardCount] = { 0.10f, 0.10f, 0.10f, 0.10f, 0.10f };
+    bool visible[kSSVEPBoardCount] = { true, true, true, true, true };
+    float customHz[kSSVEPFlickerBoardCount] = {
         kSSVEPTargetHz[0],
         kSSVEPTargetHz[1],
         kSSVEPTargetHz[2],
@@ -53,16 +53,16 @@ private:
         kSSVEPTargetHz[2],
         kSSVEPTargetHz[3]
     };
-    GLFWwindow* m_boards[4] = {};
-    unsigned m_vao[4] = {};
-    bool m_visible[4] = { true, true, true, true };
+    GLFWwindow* m_boards[kSSVEPBoardCount] = {};
+    unsigned m_vao[kSSVEPBoardCount] = {};
+    bool m_visible[kSSVEPBoardCount] = { true, true, true, true, true };
     GLFWwindow* m_share = nullptr;
     unsigned long long m_frame = 0;
     int m_refreshHz = 60;
     int m_appliedSwap = -1;
     int m_vsyncBoard = -2;
-    int m_patch[4] = {};
-    int m_winH[4] = {};
+    int m_patch[kSSVEPBoardCount] = {};
+    int m_winH[kSSVEPBoardCount] = {};
 
     unsigned m_prog = 0;
     unsigned m_vbo = 0;
@@ -79,8 +79,10 @@ private:
     int m_texMouseH[3] = {};
     unsigned m_texFont = 0;
     unsigned m_texWhite = 0;
-    void* m_fontChars = nullptr; // stbtt_bakedchar[96]
-    int m_fontAtlas = 512;
+    void* m_fontChars = nullptr; // stbtt_bakedchar[96], ASCII 32..127
+    void* m_arrowGlyph = nullptr; // stbtt_bakedchar[4], U+2190..U+2193
+    bool m_arrowReady[4] = {};
+    int m_fontAtlas = 1024;
     float m_fontBakePx = 64.0f;
 
     int m_patternMode = 1;
@@ -92,6 +94,7 @@ private:
 
 void HudOverlayApplyPlatformNoActivate(GLFWwindow* window, GLFWwindow* ownerWindow = nullptr);
 void HudOverlayKeepOnTop(GLFWwindow* window);
+void HudOverlayShowNoActivate(GLFWwindow* window);
 
 // Show the flicker square, plus cartoon pixels whose alpha is set.
 // The empty band under the square stays outside the window.
