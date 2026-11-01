@@ -73,6 +73,7 @@ set(APP_SOURCES
     AppCore/src/Processing/KeyIconCatalog.cpp
     AppCore/src/Processing/Utils.cpp
     AppCore/src/Processing/SSVEPClassifier.cpp
+    AppCore/src/Processing/Calibration.cpp
     AppCore/src/Processing/HeadObject.cpp
 )
 

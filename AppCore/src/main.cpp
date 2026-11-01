@@ -33,6 +33,7 @@ int main() {
         return -1;
     }
     ganglionBoard.SetRecorder(&eegRecorder);
+    ganglionBoard.SetCalibrationSession(&uiManager.SSVEPCalibration);
 
     std::atomic<bool> isRunning(true);
 

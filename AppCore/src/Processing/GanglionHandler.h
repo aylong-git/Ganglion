@@ -12,6 +12,7 @@
 #include "SSVEPTargets.h"
 
 class EEGRecorder;
+class CalibrationSession;
 
 static constexpr int kEEGPlotDisplayCapacity = 1000; // ~5 s at 200 Hz shown in Signal
 // Order-6 Butterworth startup lasts about (order / low_cutoff) seconds.
@@ -41,6 +42,7 @@ public:
 
     void ProcessData(const std::vector<int>& activeChannels, bool updatePlot);
     void SetRecorder(EEGRecorder* recorder);
+    void SetCalibrationSession(CalibrationSession* session);
     std::vector<double> GetBandPowers();
     EEGPlotSnapshot GetEEGPlotSnapshot();
     void SetMonitorRefreshHz(int hz);
@@ -99,4 +101,5 @@ private:
     SSVEPDetector ssvepDetector;
     SSVEPDetectSnapshot ssvepSnapshot;
     EEGRecorder* recorder = nullptr;
+    CalibrationSession* calibrationSession = nullptr;
 };

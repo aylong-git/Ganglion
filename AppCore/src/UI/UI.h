@@ -11,6 +11,7 @@
 #include "HudOverlay.h"
 #include "GanglionHandler.h"
 #include "SSVEPClassifier.h"
+#include "Calibration.h"
 
 struct ImFont;
 
@@ -75,8 +76,15 @@ public:
     std::string recordErrorMessage;
     char recordFileName[256] = "";
     char recordDirectory[512] = "";
+    bool showCalibSavePanel = false;
+    bool calibSaveAll = false;
+    int calibSaveBoard = -1;
+    char calibSaveFileName[256] = "";
+    bool showCalibSaveError = false;
+    std::string calibSaveError;
     std::atomic<bool> isFolderDialogWaiting{ false };
     std::string GetFullRecordPath() const;
+    void OpenCalibrationSave(int board);
 
     // Impedance Tab
     bool isCheckingImpedance = false;
@@ -97,6 +105,7 @@ public:
     ImFont* SSVEPKeyFont = nullptr;
     SSVEPBoardLayout SSVEPBoardLayout;
     bool SSVEPBoardLayoutInit = false;
+    CalibrationSession SSVEPCalibration;
 
 private:
     GLFWwindow* window;
@@ -113,5 +122,11 @@ private:
     void DrawSignalEEGPanel();
     void DrawSignalSpectrumPanel();
     void DrawRecordConfigPopup();
+    void DrawCalibrationSavePopup();
     void FillDefaultRecordName();
+    void FillCalibrationSaveName();
+    void DropCalibrationIfFrequencyChanged();
+    bool m_recenterCalibSavePanel = false;
+    bool m_calibHzInit = false;
+    float m_calibHzSeen[kSSVEPFlickerBoardCount] = {};
 };

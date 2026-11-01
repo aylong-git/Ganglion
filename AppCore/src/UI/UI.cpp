@@ -22,6 +22,7 @@
 #include "InputManager.h"
 #include "KeyIconCatalog.h"
 #include "SSVEPTargets.h"
+#include "data_filter.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -33,8 +34,10 @@
 #include <cmath>
 #include <random>
 #include <sstream>
+#include <fstream>
 #include <iomanip>
 #include <string>
+#include <utility>
 
 #pragma comment(lib, "setupapi.lib")
 
@@ -54,19 +57,22 @@ void UIManager::UpdateAvailablePorts() {
             char friendlyName[256] = { 0 };
             DWORD dataType;
 
-            // Retrieve the Device Manager "Friendly Name" string
+            // Bluetooth's own "Standard Serial over Bluetooth link" ports also
+            // contain "Serial". The Ganglion dongle is a USB serial device.
+            char enumerator[64] = {};
+            if (!SetupDiGetDeviceRegistryPropertyA(deviceInfoSet, &deviceInfoData, SPDRP_ENUMERATOR_NAME,
+                &dataType, (PBYTE)enumerator, sizeof(enumerator), NULL)) {
+                continue;
+            }
+            if (_stricmp(enumerator, "USB") != 0) continue;
+
             if (SetupDiGetDeviceRegistryPropertyA(deviceInfoSet, &deviceInfoData, SPDRP_FRIENDLYNAME,
                 &dataType, (PBYTE)friendlyName, sizeof(friendlyName), NULL)) {
                 std::string nameStr(friendlyName);
-
-                // Filter out non-Ganglion devices safely
-                if (nameStr.find("Serial") != std::string::npos) {
-                    size_t start = nameStr.find("(COM");
-                    size_t end = nameStr.find(")", start);
-                    if (start != std::string::npos && end != std::string::npos) {
-                        std::string extractedPort = nameStr.substr(start + 1, end - start - 1);
-                        availablePorts.push_back(extractedPort);
-                    }
+                size_t start = nameStr.find("(COM");
+                size_t end = nameStr.find(")", start);
+                if (start != std::string::npos && end != std::string::npos) {
+                    availablePorts.push_back(nameStr.substr(start + 1, end - start - 1));
                 }
             }
         }
@@ -393,6 +399,10 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
         if (hudActive) {
             hudOverlay.Render(m_swapInterval);
         }
+        SSVEPCalibration.Update(glfwGetTime());
+        if (SSVEPCalibration.IsActive()) {
+            SSVEPCalibration.Render();
+        }
 
         // Swap interval paces the loop when the driver honors it. If a frame
         // returns much earlier than one slot of the refresh, the driver did
@@ -571,12 +581,139 @@ void DrawSlideToggle(const char* id, bool* value, float dpi) {
     draw->AddCircleFilled(ImVec2(knobX, knobY), knobR, IM_COL32(255, 255, 255, 255));
 }
 
-void DrawSSVEPCalibrationTab(const SSVEPBoardLayout& layout, float dpi)
+void DrawSSVEPCalibrationTitle(const char* title, bool nullBoard, ImFont* font)
 {
-    const float btnW = 120.0f * dpi;
-    const float bottomH = ImGui::GetFrameHeight() + 12.0f * dpi;
-    const float panelsH = std::max(0.0f, ImGui::GetContentRegionAvail().y - bottomH);
-    const float panelH = panelsH / static_cast<float>(kSSVEPBoardCount);
+    ImFont* use = font ? font : ImGui::GetFont();
+    const float size = (use ? use->LegacySize : ImGui::GetFontSize()) * 1.45f;
+    if (use) ImGui::PushFont(use, size);
+    const ImVec2 ts = ImGui::CalcTextSize(title);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - ts.x) * 0.5f));
+    if (nullBoard) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.53f, 0.04f, 1.0f));
+    ImGui::TextUnformatted(title);
+    if (nullBoard) ImGui::PopStyleColor();
+    if (use) ImGui::PopFont();
+}
+
+struct SSVEPCalibrationSpectrum {
+    int n = -1;
+    int fs = 0;
+    float tail = 0.0f;
+    std::vector<double> freq;
+    std::vector<double> power[4];
+};
+
+void BuildHannPowerSpectrum(const SSVEPCalibrationTrial& trial, SSVEPCalibrationSpectrum& out)
+{
+    out = {};
+    out.n = static_cast<int>(trial.samples.size());
+    out.fs = trial.samplingRate;
+    if (!trial.samples.empty()) out.tail = trial.samples.back()[0];
+    if (!trial.complete || trial.samples.size() < 32 || trial.samplingRate < 30) return;
+
+    int n = static_cast<int>(trial.samples.size());
+    if (n % 2) --n;
+
+    for (int ch = 0; ch < 4; ++ch) {
+        std::vector<double> row(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) row[static_cast<size_t>(i)] = trial.samples[static_cast<size_t>(i)][ch];
+        try {
+            DataFilter::detrend(row.data(), n, (int)DetrendOperations::CONSTANT);
+            int psdLen = 0;
+            auto psd = DataFilter::get_psd(
+                row.data(), n, trial.samplingRate, (int)WindowOperations::HANNING, &psdLen);
+            if (psdLen <= 0 || !psd.first || !psd.second) {
+                delete[] psd.first;
+                delete[] psd.second;
+                continue;
+            }
+            if (out.freq.empty()) out.freq.assign(psd.second, psd.second + psdLen);
+            out.power[ch].resize(static_cast<size_t>(psdLen));
+            for (int i = 0; i < psdLen; ++i) {
+                const double ampl = psd.first[i];
+                out.power[ch][static_cast<size_t>(i)] = ampl * ampl;
+            }
+            delete[] psd.first;
+            delete[] psd.second;
+        }
+        catch (const BrainFlowException&) {
+            out.power[ch].clear();
+        }
+    }
+}
+
+const SSVEPCalibrationSpectrum& CalibrationSpectrumFor(int board, const SSVEPCalibrationTrial& trial)
+{
+    static SSVEPCalibrationSpectrum cache[kSSVEPBoardCount];
+    if (board < 0 || board >= kSSVEPBoardCount) {
+        static SSVEPCalibrationSpectrum empty;
+        return empty;
+    }
+    SSVEPCalibrationSpectrum& slot = cache[board];
+    const float tail = trial.samples.empty() ? 0.0f : trial.samples.back()[0];
+    const bool same = slot.n == static_cast<int>(trial.samples.size())
+        && slot.fs == trial.samplingRate
+        && slot.tail == tail
+        && trial.complete;
+    if (!same) BuildHannPowerSpectrum(trial, slot);
+    return slot;
+}
+
+void DrawSSVEPCalibrationPlot(const char* id, const ImVec2& size, bool expanded, int board, const SSVEPCalibrationTrial& trial)
+{
+    const SSVEPCalibrationSpectrum& spec = CalibrationSpectrumFor(board, trial);
+    double yMax = 1.0;
+    const int nFreq = static_cast<int>(spec.freq.size());
+    for (int ch = 0; ch < 4; ++ch) {
+        const int n = std::min(nFreq, static_cast<int>(spec.power[ch].size()));
+        for (int i = 0; i < n; ++i) {
+            if (spec.freq[static_cast<size_t>(i)] < 0.0 || spec.freq[static_cast<size_t>(i)] > 40.0) continue;
+            yMax = std::max(yMax, spec.power[ch][static_cast<size_t>(i)]);
+        }
+    }
+    yMax *= 1.12;
+
+    const ImPlotFlags flags = expanded
+        ? (ImPlotFlags_NoMenus | ImPlotFlags_NoInputs)
+        : (ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoInputs);
+    if (!ImPlot::BeginPlot(id, size, flags)) return;
+    if (expanded) {
+        ImPlot::SetupAxes("Frequency (Hz)", "Power (\xC2\xB5V\xC2\xB2)");
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 40.0, ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, yMax, ImPlotCond_Always);
+    }
+    else {
+        ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 40.0, ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, yMax, ImPlotCond_Always);
+    }
+
+    const ImVec4 cols[4] = {
+        ImVec4(0.20f, 0.62f, 0.92f, 1.0f),
+        ImVec4(0.95f, 0.55f, 0.16f, 1.0f),
+        ImVec4(0.28f, 0.74f, 0.42f, 1.0f),
+        ImVec4(0.78f, 0.38f, 0.74f, 1.0f)
+    };
+    for (int ch = 0; ch < 4; ++ch) {
+        const int n = std::min(nFreq, static_cast<int>(spec.power[ch].size()));
+        if (n < 2) continue;
+        char label[16];
+        snprintf(label, sizeof(label), "Ch %d", ch + 1);
+        ImPlotSpec line;
+        line.LineColor = cols[ch];
+        line.LineWeight = expanded ? 1.6f : 1.2f;
+        if (!expanded) line.Flags = ImPlotItemFlags_NoLegend;
+        ImPlot::PlotLine(label, spec.freq.data(), spec.power[ch].data(), n, line);
+    }
+    ImPlot::EndPlot();
+}
+
+void DrawSSVEPCalibrationTab(SSVEPBoardLayout& layout, float dpi, bool connected,
+    CalibrationSession& session, GLFWwindow* owner, unsigned patternTex, unsigned patternInvTex, ImFont* font,
+    UIManager& ui)
+{
+    static int openBoard = -1;
+    const float btnW = 160.0f * dpi;
+    const bool canStart = connected && !session.IsActive();
 
     int flicker[kSSVEPFlickerBoardCount];
     for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) flicker[i] = i;
@@ -588,41 +725,140 @@ void DrawSSVEPCalibrationTab(const SSVEPBoardLayout& layout, float dpi)
     order[0] = kSSVEPNullBoard;
     for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) order[i + 1] = flicker[i];
 
+    auto titleOf = [&](int board, char* buf, int n) {
+        if (SSVEPBoardIsNull(board)) snprintf(buf, n, "Null");
+        else snprintf(buf, n, "%.1f Hz", layout.customHz[board]);
+    };
+
+    static unsigned saveTex = 0;
+    static bool saveTexTried = false;
+    if (!saveTexTried) {
+        saveTexTried = true;
+        saveTex = LoadComponentTexture(GetAssetPath("save.png").c_str());
+    }
+    const ImVec2 framePad = ImGui::GetStyle().FramePadding;
+    const float saveBtnH = ImGui::GetFrameHeight();
+    const ImVec2 saveImage(
+        std::max(8.0f, saveBtnH - framePad.y * 2.0f),
+        std::max(8.0f, saveBtnH - framePad.y * 2.0f));
+    const float saveBtnW = saveImage.x + framePad.x * 2.0f;
+    const float saveGap = 8.0f * dpi;
+    auto drawSave = [&](const char* id, bool enabled, int board) {
+        ImGui::BeginDisabled(!enabled);
+        bool pressed = false;
+        if (saveTex != 0) {
+            pressed = ImGui::ImageButton(id, ImTextureRef((ImTextureID)(intptr_t)saveTex), saveImage);
+        }
+        else {
+            pressed = ImGui::Button("Save", ImVec2(saveBtnW, 0.0f));
+        }
+        ImGui::EndDisabled();
+        if (!enabled && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip(board < 0 ? "Calibrate every board first" : "Calibrate this board first");
+        }
+        if (pressed) ui.OpenCalibrationSave(board);
+    };
+    bool allCalibrated = true;
+    for (int i = 0; i < kSSVEPBoardCount; ++i) {
+        if (!session.HasTrial(i)) allCalibrated = false;
+    }
+
+    if (openBoard >= 0) {
+        char title[64];
+        titleOf(openBoard, title, sizeof(title));
+        DrawSSVEPCalibrationTitle(title, SSVEPBoardIsNull(openBoard), font);
+        const float buttonRow = ImGui::GetFrameHeight() + 8.0f * dpi;
+        const float backRow = ImGui::GetFrameHeight() + 8.0f * dpi;
+        const ImVec2 plotSize(
+            std::max(1.0f, ImGui::GetContentRegionAvail().x),
+            std::max(80.0f, ImGui::GetContentRegionAvail().y - buttonRow - backRow));
+        SSVEPCalibrationTrial openTrial;
+        session.CopyTrial(openBoard, openTrial);
+        DrawSSVEPCalibrationPlot("##SSVEPCalExpanded", plotSize, true, openBoard, openTrial);
+
+        const float pairW = btnW * 2.0f + 8.0f * dpi + saveGap + saveBtnW;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - pairW) * 0.5f));
+        ImGui::BeginDisabled(!canStart);
+        if (ImGui::Button("Calibrate", ImVec2(btnW, 0.0f))) {
+            session.Start(openBoard, layout, owner, dpi, patternTex, patternInvTex);
+        }
+        ImGui::EndDisabled();
+        if (!connected && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Connect the board first");
+        }
+        ImGui::SameLine(0.0f, saveGap);
+        drawSave("##saveOpen", session.HasTrial(openBoard), openBoard);
+        ImGui::SameLine(0.0f, 8.0f * dpi);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.12f, 0.12f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.22f, 0.22f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.70f, 0.08f, 0.08f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        if (ImGui::Button("Reset threshold", ImVec2(btnW, 0.0f))) {
+        }
+        ImGui::PopStyleColor(4);
+
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - btnW) * 0.5f));
+        if (ImGui::Button("Back", ImVec2(btnW, 0.0f))) {
+            openBoard = -1;
+        }
+        return;
+    }
+
+    const float gap = 8.0f * dpi;
+    const float plotH = 96.0f * dpi;
+    const float cardW = std::max(80.0f, (ImGui::GetContentRegionAvail().x - gap * (kSSVEPBoardCount - 1)) / kSSVEPBoardCount);
     for (int row = 0; row < kSSVEPBoardCount; ++row) {
         const int board = order[row];
         ImGui::PushID(board);
-        ImGui::BeginChild("##SSVEPCalPanel", ImVec2(0.0f, panelH), true);
-        const float innerH = std::max(1.0f, ImGui::GetContentRegionAvail().y);
-        if (ImGui::Button("Calibration", ImVec2(btnW, innerH))) {
-        }
-        ImGui::SameLine();
-        ImGui::BeginGroup();
+        if (row > 0) ImGui::SameLine(0.0f, gap);
+        ImGui::BeginChild("##SSVEPCalCard", ImVec2(cardW, 0.0f),
+            ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY,
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         char title[64];
-        if (SSVEPBoardIsNull(board)) {
-            snprintf(title, sizeof(title), "Null");
+        titleOf(board, title, sizeof(title));
+        DrawSSVEPCalibrationTitle(title, SSVEPBoardIsNull(board), font);
+        if (ImGui::IsItemClicked()) openBoard = board;
+
+        const ImVec2 plotSize(std::max(1.0f, ImGui::GetContentRegionAvail().x), plotH);
+        const ImVec2 plotPos = ImGui::GetCursorScreenPos();
+        SSVEPCalibrationTrial previewTrial;
+        session.CopyTrial(board, previewTrial);
+        DrawSSVEPCalibrationPlot("##SSVEPCalPreview", plotSize, false, board, previewTrial);
+        const ImVec2 afterPlot = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(plotPos);
+        if (ImGui::InvisibleButton("##openPreview", plotSize)) openBoard = board;
+        ImGui::SetCursorScreenPos(afterPlot);
+
+        const float innerW = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        const float calW = std::min(btnW, std::max(1.0f, innerW - saveGap - saveBtnW));
+        const float rowW = calW + saveGap + saveBtnW;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (innerW - rowW) * 0.5f));
+        ImGui::BeginDisabled(!canStart);
+        if (ImGui::Button("Calibrate", ImVec2(calW, 0.0f))) {
+            session.Start(board, layout, owner, dpi, patternTex, patternInvTex);
         }
-        else {
-            snprintf(title, sizeof(title), "%.1f Hz", layout.customHz[board]);
+        ImGui::EndDisabled();
+        if (!connected && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Connect the board first");
         }
-        ImGui::TextUnformatted(title);
-        const ImVec2 plotSize(
-            std::max(1.0f, ImGui::GetContentRegionAvail().x),
-            std::max(1.0f, ImGui::GetContentRegionAvail().y));
-        if (ImPlot::BeginPlot("##SSVEPCalPlot", plotSize, ImPlotFlags_NoLegend | ImPlotFlags_NoMenus)) {
-            ImPlot::SetupAxes("Time (s)", "\xC2\xB5V\xC2\xB2");
-            ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 5.0, ImPlotCond_Always);
-            ImPlot::EndPlot();
-        }
-        ImGui::EndGroup();
+        ImGui::SameLine(0.0f, saveGap);
+        drawSave("##save", session.HasTrial(board), board);
         ImGui::EndChild();
         ImGui::PopID();
     }
 
-    const char* allLabel = "Calibrate All";
-    const float allW = 160.0f * dpi;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - allW) * 0.5f));
-    if (ImGui::Button(allLabel, ImVec2(allW, 0.0f))) {
+    const float allRowW = btnW + saveGap + saveBtnW;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - allRowW) * 0.5f));
+    ImGui::BeginDisabled(!canStart);
+    if (ImGui::Button("Calibrate All", ImVec2(btnW, 0.0f))) {
+        session.StartAll(layout, owner, dpi, patternTex, patternInvTex);
     }
+    ImGui::EndDisabled();
+    if (!connected && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Connect the board first");
+    }
+    ImGui::SameLine(0.0f, saveGap);
+    drawSave("##saveAll", allCalibrated, -1);
 }
 
 void DrawSSVEPFixation(ImDrawList* draw, ImVec2 topLeft, float side, float signal)
@@ -1490,8 +1726,7 @@ void SelectFolderDialog(char* targetBuffer, size_t bufferSize, std::atomic<bool>
 #endif
 } // namespace
 
-std::string UIManager::GetFullRecordPath() const {
-    std::string file = recordFileName;
+std::string BuildCsvPath(std::string dir, std::string file) {
     if (file.empty()) file = "eeg_recording.csv";
 
     for (char& c : file) {
@@ -1504,11 +1739,38 @@ std::string UIManager::GetFullRecordPath() const {
         file += ".csv";
     }
 
-    std::string dir = recordDirectory;
     if (dir.empty()) return file;
     const char last = dir.back();
     if (last != '\\' && last != '/') dir += '\\';
     return dir + file;
+}
+
+std::string UIManager::GetFullRecordPath() const {
+    return BuildCsvPath(recordDirectory, recordFileName);
+}
+
+bool WriteCalibrationCsv(const std::string& path, bool withBoard,
+    const std::vector<std::pair<std::string, SSVEPCalibrationTrial>>& trials, std::string& error)
+{
+    std::ofstream file(path, std::ios::out | std::ios::trunc | std::ios::binary);
+    if (!file.is_open()) {
+        error = "Could not open " + path;
+        return false;
+    }
+    file << std::setprecision(6);
+    if (withBoard) file << "Board,";
+    file << "Channel_1,Channel_2,Channel_3,Channel_4\n";
+    for (const auto& item : trials) {
+        for (const auto& sample : item.second.samples) {
+            if (withBoard) file << item.first << ',';
+            file << sample[0] << ',' << sample[1] << ',' << sample[2] << ',' << sample[3] << '\n';
+        }
+    }
+    if (!file.good()) {
+        error = "Could not write " + path;
+        return false;
+    }
+    return true;
 }
 
 void UIManager::FillDefaultRecordName() {
@@ -1529,6 +1791,57 @@ void UIManager::FillDefaultRecordName() {
         << std::setw(2) << local.tm_sec;
     const std::string name = ss.str();
     std::snprintf(recordFileName, sizeof(recordFileName), "%s", name.c_str());
+}
+
+void UIManager::OpenCalibrationSave(int board) {
+    calibSaveAll = board < 0;
+    calibSaveBoard = board;
+    FillCalibrationSaveName();
+    showCalibSavePanel = true;
+    m_recenterCalibSavePanel = true;
+}
+
+void UIManager::FillCalibrationSaveName() {
+    std::time_t raw = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &raw);
+#else
+    localtime_r(&raw, &local);
+#endif
+    char tag[64];
+    if (calibSaveAll) {
+        std::snprintf(tag, sizeof(tag), "calib_all");
+    }
+    else if (SSVEPBoardIsNull(calibSaveBoard)) {
+        std::snprintf(tag, sizeof(tag), "calib_Null");
+    }
+    else if (calibSaveBoard >= 0 && calibSaveBoard < kSSVEPFlickerBoardCount) {
+        std::snprintf(tag, sizeof(tag), "calib_%.1fHz", SSVEPBoardLayout.customHz[calibSaveBoard]);
+    }
+    else {
+        std::snprintf(tag, sizeof(tag), "calib");
+    }
+    char name[160];
+    std::snprintf(name, sizeof(name), "%s_%02d_%02d_%02d_%02d_%02d",
+        tag, local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec);
+    std::snprintf(calibSaveFileName, sizeof(calibSaveFileName), "%s", name);
+}
+
+void UIManager::DropCalibrationIfFrequencyChanged() {
+    if (!m_calibHzInit) {
+        for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) {
+            m_calibHzSeen[i] = SSVEPBoardLayout.customHz[i];
+        }
+        m_calibHzInit = true;
+        return;
+    }
+    for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) {
+        if (std::fabs(m_calibHzSeen[i] - SSVEPBoardLayout.customHz[i]) > 0.05f) {
+            SSVEPCalibration.ClearTrial(i);
+            m_calibHzSeen[i] = SSVEPBoardLayout.customHz[i];
+        }
+    }
 }
 
 void UIManager::DrawRecordConfigPopup() {
@@ -1615,6 +1928,129 @@ void UIManager::DrawRecordConfigPopup() {
     ImGui::End();
 }
 
+void UIManager::DrawCalibrationSavePopup() {
+    if (!showCalibSavePanel) return;
+
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImVec2 workPos = vp->WorkPos;
+    const ImVec2 workSize = vp->WorkSize;
+    const bool displayOk = workSize.x > 64.0f && workSize.y > 64.0f;
+    const ImVec2 center = vp->GetCenter();
+
+    const bool bringToFront = m_recenterCalibSavePanel;
+    if (displayOk) {
+        if (m_recenterCalibSavePanel) {
+            ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
+            m_recenterCalibSavePanel = false;
+        }
+        else {
+            ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowCollapsed(false, ImGuiCond_Appearing);
+        }
+    }
+
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
+    ImGui::Begin("Save in", &showCalibSavePanel, flags);
+    ImGui::SetWindowCollapsed(false);
+
+    const ImVec2 pos = ImGui::GetWindowPos();
+    const ImVec2 size = ImGui::GetWindowSize();
+    const bool offscreen = pos.x + size.x < workPos.x + 48.0f ||
+        pos.y + 24.0f < workPos.y ||
+        pos.x > workPos.x + workSize.x - 48.0f ||
+        pos.y > workPos.y + workSize.y - 48.0f;
+    if (displayOk && offscreen) {
+        ImGui::SetWindowPos(ImVec2(center.x - size.x * 0.5f, center.y - size.y * 0.5f));
+    }
+    if (bringToFront || ImGui::IsWindowAppearing()) {
+        ImGui::SetWindowFocus();
+    }
+
+    ImGui::Text("Enter filename:");
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(280.0f * m_dpiScale);
+    ImGui::InputText("##calibFilename", calibSaveFileName, sizeof(calibSaveFileName));
+    ImGui::SameLine();
+    ImGui::TextUnformatted(".csv");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::Text("Save in:");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 100.0f * m_dpiScale);
+    ImGui::InputText("##calibDirectory", recordDirectory, sizeof(recordDirectory));
+    ImGui::SameLine();
+#if defined(_WIN32) || defined(_WIN64)
+    if (isFolderDialogWaiting.load()) {
+        ImGui::BeginDisabled();
+        ImGui::Button("Waiting...", ImVec2(90.0f * m_dpiScale, 0));
+        ImGui::EndDisabled();
+    }
+    else if (ImGui::Button("Browse...", ImVec2(90.0f * m_dpiScale, 0))) {
+        SelectFolderDialog(recordDirectory, sizeof(recordDirectory), isFolderDialogWaiting);
+    }
+#else
+    ImGui::TextDisabled("type path");
+#endif
+
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.70f, 0.22f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.80f, 0.30f, 1.0f));
+    if (ImGui::Button("Save", ImVec2(-1, 40.0f * m_dpiScale))) {
+        std::vector<std::pair<std::string, SSVEPCalibrationTrial>> trials;
+        auto pushBoard = [&](int board) {
+            SSVEPCalibrationTrial trial;
+            SSVEPCalibration.CopyTrial(board, trial);
+            if (!trial.complete || trial.samples.empty()) return false;
+            char label[32];
+            if (SSVEPBoardIsNull(board)) std::snprintf(label, sizeof(label), "Null");
+            else std::snprintf(label, sizeof(label), "%.1fHz", SSVEPBoardLayout.customHz[board]);
+            trials.emplace_back(label, std::move(trial));
+            return true;
+        };
+
+        bool ready = true;
+        if (calibSaveAll) {
+            int flicker[kSSVEPFlickerBoardCount];
+            for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) flicker[i] = i;
+            std::sort(flicker, flicker + kSSVEPFlickerBoardCount, [&](int a, int b) {
+                if (SSVEPBoardLayout.customHz[a] != SSVEPBoardLayout.customHz[b]) {
+                    return SSVEPBoardLayout.customHz[a] < SSVEPBoardLayout.customHz[b];
+                }
+                return a < b;
+            });
+            if (!pushBoard(kSSVEPNullBoard)) ready = false;
+            for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) {
+                if (!pushBoard(flicker[i])) ready = false;
+            }
+        }
+        else {
+            ready = pushBoard(calibSaveBoard);
+        }
+
+        if (!ready) {
+            calibSaveError = "That calibration is no longer available.";
+            showCalibSaveError = true;
+        }
+        else {
+            std::string error;
+            const std::string path = BuildCsvPath(recordDirectory, calibSaveFileName);
+            if (!WriteCalibrationCsv(path, calibSaveAll, trials, error)) {
+                calibSaveError = error;
+                showCalibSaveError = true;
+            }
+            else {
+                showCalibSavePanel = false;
+            }
+        }
+    }
+    ImGui::PopStyleColor(2);
+
+    ImGui::End();
+}
+
 void UIManager::DrawSignalEEGPanel() {
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float recBtnW = 120.0f * m_dpiScale;
@@ -1648,7 +2084,6 @@ void UIManager::DrawSignalEEGPanel() {
 
     const float rowGap = ImGui::GetStyle().ItemSpacing.y;
     const float windowH = 5.0f;
-    const int fs = snap.samplingRate > 0 ? snap.samplingRate : 200;
     const float xAxisHeight = 2.0f * ImGui::GetTextLineHeight() + 8.0f * m_dpiScale;
     float availY = ImGui::GetContentRegionAvail().y;
     float baseRowH = std::max(48.0f * m_dpiScale, (availY - 3.0f * rowGap - xAxisHeight) / 4.0f);
@@ -1707,9 +2142,15 @@ void UIManager::DrawSignalEEGPanel() {
                 if (i == 0 || yDisp[i] < lo) lo = yDisp[i];
                 if (i == 0 || yDisp[i] > hi) hi = yDisp[i];
             }
-            xMin = snap.t[ch][0];
-            xMax = snap.t[ch][n - 1];
-            if (xMax <= xMin) xMax = xMin + (windowH / std::max(1, fs));
+            const double t0 = snap.t[ch][0];
+            const double t1 = snap.t[ch][n - 1];
+            if (t1 - t0 >= windowH) {
+                xMax = t1;
+                xMin = t1 - windowH;
+            } else {
+                xMin = t0;
+                xMax = t0 + windowH;
+            }
             const float span = std::max(50.0f, hi - lo);
             const float pad = span * 0.12f;
             yMin = lo - pad;
@@ -2208,7 +2649,8 @@ void UIManager::RenderUI() {
                 }
 
                 if (ImGui::BeginTabItem("Calibration")) {
-                    DrawSSVEPCalibrationTab(SSVEPBoardLayout, m_dpiScale);
+                    DrawSSVEPCalibrationTab(SSVEPBoardLayout, m_dpiScale, isConnected, SSVEPCalibration, window,
+                        patternTex, patternInvTex, SSVEPKeyFont, *this);
                     ImGui::EndTabItem();
                 }
 
@@ -2625,8 +3067,30 @@ void UIManager::RenderUI() {
         }
         ImGui::EndPopup();
     }
+
+    if (showCalibSaveError) {
+        ImGui::OpenPopup("Calibration Save Error");
+        showCalibSaveError = false;
+    }
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Calibration Save Error", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "Could not save calibration");
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextUnformatted(calibSaveError.c_str());
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::SetCursorPosX((ImGui::GetWindowSize().x - 120) * 0.5f);
+        if (ImGui::Button("OK", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     ImGui::End();
 
+    DropCalibrationIfFrequencyChanged();
+    DrawCalibrationSavePopup();
     DrawRecordConfigPopup();
 }
 
@@ -2640,6 +3104,7 @@ ImVec4 UIManager::ColorConvertU32ToFloat4(ImU32 in) {
 }
 
 void UIManager::Cleanup() {
+    SSVEPCalibration.Shutdown();
     hudOverlay.Leave();
     if (window) {
         ImGui_ImplOpenGL3_Shutdown();

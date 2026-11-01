@@ -1,5 +1,6 @@
 #include "GanglionHandler.h"
 #include "EEGRecorder.h"
+#include "Calibration.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -226,6 +227,10 @@ void GanglionHandler::SetRecorder(EEGRecorder* rec) {
     recorder = rec;
 }
 
+void GanglionHandler::SetCalibrationSession(CalibrationSession* session) {
+    calibrationSession = session;
+}
+
 void GanglionHandler::ProcessData(const std::vector<int>& activeChannels, bool updatePlot) {
     if (!connected || board == nullptr) return;
 
@@ -281,6 +286,15 @@ void GanglionHandler::ProcessData(const std::vector<int>& activeChannels, bool u
                         }
                     }
                     recorder->PushSample(row[0], row[1], row[2], row[3]);
+                }
+                if (calibrationSession && calibrationSession->IsRecording()) {
+                    float row[4] = {};
+                    for (int ch = 0; ch < 4; ++ch) {
+                        if (ch < static_cast<int>(allEEGChannels.size())) {
+                            row[ch] = static_cast<float>(data.get_address(allEEGChannels[ch])[s]);
+                        }
+                    }
+                    calibrationSession->PushSample(row, samplingRate);
                 }
                 ++sampleIndex;
             }
