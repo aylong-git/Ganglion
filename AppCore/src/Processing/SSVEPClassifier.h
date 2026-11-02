@@ -31,11 +31,23 @@ struct SSVEPDetectSnapshot {
     float hopSec = 5.0f;
     float corr[4] = {};
     float harmonicSnr[4] = {};
+    float appliedSnr[4] = {};
+    bool snrGate[4] = {};
     float gateRatio = 0.0f;
 };
 
-// Monopoly-style CCA (2 harmonics) on a 5 s window, majority of the last 4
-// hops (5 s). A full vote covers ~20 s, not a 10 s trial.
+// Hann SNR at each target: channel weight * (SNR(f) + 0.5 * SNR(2f)).
+// A null channel pointer is skipped. Power is the squared one-sided spectrum.
+bool MeasureHarmonicSnr(const float* const channels[4], int nSamples, int fs,
+    const float targetHz[4], float outSnr[4]);
+// Power at the Hann bin nearest targetHz, the highest of the four channels.
+// Same 4–40 Hz bandpass the calibration plot uses, so the guide line
+// sits on the filtered spectrum. The saved CSV stays unfiltered.
+float HannPeakPower(const float* const channels[4], int nSamples, int fs, float targetHz);
+void ApplyDisplaySpectrumFilter(double* data, int n, int fs, double lowHz = 4.0, double highHz = 40.0);
+
+// Filter-bank CCA (Chen 2015, M3) on one window. The caller rejects the
+// winner when its Hann SNR is at or below that board's calibration cutoff.
 class SSVEPDetector {
 public:
     void Reset();

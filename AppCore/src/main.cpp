@@ -173,6 +173,7 @@ int main() {
                 }
 
                 ganglionBoard.ProcessData(activeChannels, updatePlot);
+                uiManager.ssvepFlickerPaused.store(ganglionBoard.FlickerPaused());
 
                 std::vector<double> bands = ganglionBoard.GetBandPowers();
                 for (int i = 0; i < 5; i++) {
@@ -187,7 +188,10 @@ int main() {
                     uiManager.SSVEPDetect = std::move(detect);
                 }
             }
-            else if (uiManager.isRecording.load()) {
+            else {
+                uiManager.ssvepFlickerPaused.store(false);
+            }
+            if (!ganglionBoard.IsConnected() && uiManager.isRecording.load()) {
                 eegRecorder.Stop();
                 uiManager.isRecording.store(false);
             }

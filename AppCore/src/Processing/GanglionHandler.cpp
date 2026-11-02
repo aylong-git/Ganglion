@@ -1,14 +1,24 @@
 #include "GanglionHandler.h"
 #include "EEGRecorder.h"
 #include "Calibration.h"
+#include "Utils.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <thread>
 #include <chrono>
 #include <vector>
 #include "data_filter.h"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <mmsystem.h>
+#endif
 
 namespace {
     constexpr int kPlotFilterMinSamples = 24;
@@ -37,6 +47,128 @@ namespace {
         const double seconds = static_cast<double>(kEEGFilterOrder) / flo;
         const int n = static_cast<int>(std::ceil(seconds * static_cast<double>(fs)));
         return std::max(kPlotFilterMinSamples, n);
+    }
+
+    void PlayDetectionChime()
+    {
+#if defined(_WIN32)
+        // PlaySound only accepts PCM. This clip is 32-bit float, so convert once.
+        static std::vector<char> pcm;
+        static bool tried = false;
+        if (!tried) {
+            tried = true;
+            std::ifstream in(GetAssetPath("hitfinish.wav"), std::ios::binary);
+            std::vector<unsigned char> file;
+            if (in) {
+                in.seekg(0, std::ios::end);
+                const std::streamoff n = in.tellg();
+                in.seekg(0, std::ios::beg);
+                if (n > 44 && n < 8 * 1024 * 1024) {
+                    file.resize(static_cast<size_t>(n));
+                    in.read(reinterpret_cast<char*>(file.data()), n);
+                }
+            }
+            auto tagAt = [&](size_t at) -> unsigned {
+                if (at + 4 > file.size()) return 0;
+                return static_cast<unsigned>(file[at])
+                    | (static_cast<unsigned>(file[at + 1]) << 8)
+                    | (static_cast<unsigned>(file[at + 2]) << 16)
+                    | (static_cast<unsigned>(file[at + 3]) << 24);
+            };
+            if (file.size() > 44 && tagAt(0) == 0x46464952 && tagAt(8) == 0x45564157) {
+                size_t at = 12;
+                int channels = 0;
+                int rate = 0;
+                int bits = 0;
+                int format = 0;
+                const unsigned char* data = nullptr;
+                unsigned dataBytes = 0;
+                while (at + 8 <= file.size()) {
+                    const unsigned id = tagAt(at);
+                    const unsigned sz = tagAt(at + 4);
+                    const size_t body = at + 8;
+                    if (body + sz > file.size()) break;
+                    if (id == 0x20746d66 && sz >= 16) {
+                        format = file[body] | (file[body + 1] << 8);
+                        channels = file[body + 2] | (file[body + 3] << 8);
+                        rate = static_cast<int>(tagAt(body + 4));
+                        bits = file[body + 14] | (file[body + 15] << 8);
+                    }
+                    else if (id == 0x61746164) {
+                        data = file.data() + body;
+                        dataBytes = sz;
+                    }
+                    at = body + sz + (sz & 1u);
+                }
+                const bool floatStereo = format == 3 && channels == 2 && bits == 32 && rate > 0 && data != nullptr;
+                const unsigned frameBytes = 8;
+                if (floatStereo && dataBytes >= frameBytes && (dataBytes / frameBytes) < 96000u * 5u) {
+                    const unsigned frames = dataBytes / frameBytes;
+                    const unsigned pcmBytes = frames * 4;
+                    pcm.resize(44 + pcmBytes);
+                    auto put32 = [&](size_t o, unsigned v) {
+                        pcm[o] = static_cast<char>(v & 0xff);
+                        pcm[o + 1] = static_cast<char>((v >> 8) & 0xff);
+                        pcm[o + 2] = static_cast<char>((v >> 16) & 0xff);
+                        pcm[o + 3] = static_cast<char>((v >> 24) & 0xff);
+                    };
+                    auto put16 = [&](size_t o, unsigned v) {
+                        pcm[o] = static_cast<char>(v & 0xff);
+                        pcm[o + 1] = static_cast<char>((v >> 8) & 0xff);
+                    };
+                    std::memcpy(pcm.data(), "RIFF", 4);
+                    put32(4, 36 + pcmBytes);
+                    std::memcpy(pcm.data() + 8, "WAVEfmt ", 8);
+                    put32(16, 16);
+                    put16(20, 1);
+                    put16(22, 2);
+                    put32(24, static_cast<unsigned>(rate));
+                    put32(28, static_cast<unsigned>(rate) * 4);
+                    put16(32, 4);
+                    put16(34, 16);
+                    std::memcpy(pcm.data() + 36, "data", 4);
+                    put32(40, pcmBytes);
+                    for (unsigned i = 0; i < frames * 2; ++i) {
+                        float sample = 0.0f;
+                        std::memcpy(&sample, data + i * 4, 4);
+                        if (sample > 1.0f) sample = 1.0f;
+                        if (sample < -1.0f) sample = -1.0f;
+                        const int v = static_cast<int>(sample * 32767.0f);
+                        put16(44 + i * 2, static_cast<unsigned>(v));
+                    }
+                }
+            }
+        }
+        if (!pcm.empty()) {
+            PlaySoundA(pcm.data(), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+        }
+#else
+        (void)0;
+#endif
+    }
+
+    void ApplyCalibrationSnrGate(CalibrationSession* session, SSVEPDetectSnapshot& snap) {
+        if (!session || snap.windowWinner < 0) return;
+        for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) {
+            SSVEPBoardThreshold threshold;
+            if (session->CopySnrThreshold(i, threshold)) {
+                snap.snrGate[i] = true;
+                snap.appliedSnr[i] = threshold.appliedSnr;
+            }
+            else {
+                snap.snrGate[i] = false;
+                snap.appliedSnr[i] = 0.0f;
+            }
+        }
+        const int choice = snap.windowWinner;
+        if (!snap.snrGate[choice]) {
+            snap.votedWinner = choice;
+            return;
+        }
+        const bool pass = snap.harmonicSnr[choice] > snap.appliedSnr[choice];
+        snap.votedWinner = pass ? choice : -1;
+        snap.gateRatio = (snap.appliedSnr[choice] > 0.0f)
+            ? (snap.harmonicSnr[choice] / snap.appliedSnr[choice]) : 0.0f;
     }
 }
 
@@ -393,8 +525,16 @@ EEGPlotSnapshot GanglionHandler::GetEEGPlotSnapshot() {
     const int warmup = std::min(kEEGFilterWarmupCapacity, PlotFilterWarmupSamples(fs, lowHz));
     const int minKeep = std::max(kPlotFilterMinSamples, fs);    // keep >= ~1 s
 
+    const int liveN = std::min(kEEGLiveSpectrumCapacity, std::max(1, fs * 9));
     for (int ch = 0; ch < 4; ++ch) {
         const int n = snap.count[ch];
+        const int take = std::min(n, liveN);
+        snap.liveCount[ch] = take;
+        if (take > 0) {
+            std::memcpy(snap.liveY[ch].data(), snap.y[ch].data() + (n - take),
+                static_cast<size_t>(take) * sizeof(float));
+        }
+
         ApplySSVEPPlotFilters(snap.y[ch].data(), n, fs, lowHz, highHz);
 
         int skip = 0;
@@ -430,7 +570,8 @@ void GanglionHandler::TrySSVEPDetect(const bool enabled[4]) {
     int windowN = static_cast<int>(std::lround(currentWindowSec * fs));
     if (windowN % 2) windowN--;
     windowN = std::max(32, windowN);
-    const int hopN = std::max(1, static_cast<int>(std::lround(currentWindowSec * fs)));
+    const int pauseN = std::max(1, fs);
+    const int hopN = windowN + pauseN;
 
     bool maskChanged = false;
     int shortest = windowN;
@@ -452,18 +593,31 @@ void GanglionHandler::TrySSVEPDetect(const bool enabled[4]) {
     ssvepDetector.SetRefreshHz(monitorRefreshHz);
     ssvepDetector.NoteProgress(static_cast<float>(shortest) / static_cast<float>(fs), fs);
 
+    auto publishPause = [&]() {
+        bool paused = false;
+        if (ssvepDetector.Snapshot().ready && sampleIndex >= lastDetectSample) {
+            paused = (sampleIndex - lastDetectSample) < static_cast<std::uint64_t>(pauseN);
+        }
+        flickerPaused.store(paused);
+    };
+
     if (!any || shortest < windowN) {
         std::lock_guard<std::mutex> lock(dataMutex);
         ssvepSnapshot = ssvepDetector.Snapshot();
+        publishPause();
         return;
     }
     if (sampleIndex >= lastDetectSample
         && sampleIndex - lastDetectSample < static_cast<std::uint64_t>(hopN)
         && ssvepDetector.Snapshot().ready) {
+        std::lock_guard<std::mutex> lock(dataMutex);
+        ssvepSnapshot = ssvepDetector.Snapshot();
+        ApplyCalibrationSnrGate(calibrationSession, ssvepSnapshot);
+        publishPause();
         return;
     }
     if (sampleIndex > lastDetectSample
-        && sampleIndex - lastDetectSample > static_cast<std::uint64_t>(windowN)) {
+        && sampleIndex - lastDetectSample > static_cast<std::uint64_t>(hopN + windowN)) {
         ssvepDetector.Reset();
         ssvepDetector.SetRefreshHz(monitorRefreshHz);
     }
@@ -488,10 +642,13 @@ void GanglionHandler::TrySSVEPDetect(const bool enabled[4]) {
 
     ssvepDetector.Analyze(ptrs, enabled, windowN, fs);
     lastDetectSample = sampleIndex;
+    if (ssvepDetector.Snapshot().ready) PlayDetectionChime();
     {
         std::lock_guard<std::mutex> lock(dataMutex);
         ssvepSnapshot = ssvepDetector.Snapshot();
+        ApplyCalibrationSnrGate(calibrationSession, ssvepSnapshot);
     }
+    publishPause();
 }
 
 bool GanglionHandler::StartImpedanceMode(const std::string& port, const std::string& macAddress) {

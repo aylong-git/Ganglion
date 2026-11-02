@@ -37,7 +37,7 @@ public:
     bool IsActive() const { return m_boards[0] != nullptr; }
     void Sync(const SSVEPBoardLayout& layout);
     // swapInterval is how many vblanks the pacing board waits. The other boards present immediately.
-    void Render(int swapInterval);
+    void Render(int swapInterval, bool holdStill);
 
 private:
     bool InitGl();

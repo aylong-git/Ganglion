@@ -16,6 +16,18 @@ struct SSVEPCalibrationTrial {
     std::vector<std::array<float, 4>> samples;
 };
 
+// SNR cutoff for one flicker board. appliedSnr starts at 70% of the
+// calibration SNR and moves when the power line on that spectrum is dragged.
+struct SSVEPBoardThreshold {
+    bool valid = false;
+    float measuredSnr = 0.0f;
+    float autoSnr = 0.0f;
+    float appliedSnr = 0.0f;
+    float peakPower = 0.0f;
+    // Fraction of peakPower. 0.70 is the automatic cutoff.
+    float lineScale = 0.70f;
+};
+
 // One countdown, then 5 s of the selected board. Calibrate All is the same
 // session walked across every target, with a separate trial buffer each.
 class CalibrationSession {
@@ -38,6 +50,10 @@ public:
     void CopyTrial(int board, SSVEPCalibrationTrial& out) const;
     bool HasTrial(int board) const;
     void ClearTrial(int board);
+    void NoteCalibrationSnr(int board, float measuredSnr, float peakPower);
+    void SetLineScale(int board, float lineScale);
+    void ResetSnrThreshold(int board);
+    bool CopySnrThreshold(int board, SSVEPBoardThreshold& out) const;
 
 private:
     void Begin(const std::vector<int>& boards, const SSVEPBoardLayout& layout,
@@ -83,6 +99,7 @@ private:
     bool escapeDown_ = false;
 
     SSVEPCalibrationTrial stored_[kSSVEPBoardCount];
+    SSVEPBoardThreshold threshold_[kSSVEPFlickerBoardCount];
     std::vector<std::array<float, 4>> scratchSamples_;
     int scratchRate_ = 200;
     mutable std::mutex mutex_;

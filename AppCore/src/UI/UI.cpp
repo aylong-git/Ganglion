@@ -356,7 +356,7 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
         const bool hudActive = hudOverlay.IsActive();
         // Preview flicker in the dashboard is extra. While the HUD windows are
         // already stimulating, keep the dashboard on the slow path.
-        const bool fastFlickerInMainWin = SSVEPTestMode || (SSVEPPreviewEnabled && !hudActive);
+        const bool fastFlickerInMainWin = SSVEPTestMode || SSVEPCalibTestOpen || (SSVEPPreviewEnabled && !hudActive);
 
         // Dashboard UI stays near 30 Hz while HUD is up, otherwise near 60 Hz.
         // Test mode, and preview with HUD off, render every paced frame.
@@ -397,7 +397,7 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
         }
 
         if (hudActive) {
-            hudOverlay.Render(m_swapInterval);
+            hudOverlay.Render(m_swapInterval, ssvepFlickerPaused.load());
         }
         SSVEPCalibration.Update(glfwGetTime());
         if (SSVEPCalibration.IsActive()) {
@@ -437,6 +437,8 @@ const char* ProPortVectorGetter(void* user_data, int idx) {
     // Extract and return the raw C-string
     return (*ports_vec)[idx].c_str();
 }
+
+void DrawSSVEPScoreGraph(const SSVEPDetectSnapshot& snap);
 
 namespace {
 float ClampedBoardSizeFrac(float sizeFrac) {
@@ -581,16 +583,18 @@ void DrawSlideToggle(const char* id, bool* value, float dpi) {
     draw->AddCircleFilled(ImVec2(knobX, knobY), knobR, IM_COL32(255, 255, 255, 255));
 }
 
-void DrawSSVEPCalibrationTitle(const char* title, bool nullBoard, ImFont* font)
+void DrawSSVEPCalibrationTitle(const char* title, bool nullBoard, ImFont* font, const ImVec4* color = nullptr)
 {
     ImFont* use = font ? font : ImGui::GetFont();
     const float size = (use ? use->LegacySize : ImGui::GetFontSize()) * 1.45f;
     if (use) ImGui::PushFont(use, size);
     const ImVec2 ts = ImGui::CalcTextSize(title);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - ts.x) * 0.5f));
-    if (nullBoard) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.53f, 0.04f, 1.0f));
+    const bool tint = color != nullptr || nullBoard;
+    if (color) ImGui::PushStyleColor(ImGuiCol_Text, *color);
+    else if (nullBoard) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.53f, 0.04f, 1.0f));
     ImGui::TextUnformatted(title);
-    if (nullBoard) ImGui::PopStyleColor();
+    if (tint) ImGui::PopStyleColor();
     if (use) ImGui::PopFont();
 }
 
@@ -617,7 +621,7 @@ void BuildHannPowerSpectrum(const SSVEPCalibrationTrial& trial, SSVEPCalibration
         std::vector<double> row(static_cast<size_t>(n));
         for (int i = 0; i < n; ++i) row[static_cast<size_t>(i)] = trial.samples[static_cast<size_t>(i)][ch];
         try {
-            DataFilter::detrend(row.data(), n, (int)DetrendOperations::CONSTANT);
+            ApplyDisplaySpectrumFilter(row.data(), n, trial.samplingRate);
             int psdLen = 0;
             auto psd = DataFilter::get_psd(
                 row.data(), n, trial.samplingRate, (int)WindowOperations::HANNING, &psdLen);
@@ -658,34 +662,118 @@ const SSVEPCalibrationSpectrum& CalibrationSpectrumFor(int board, const SSVEPCal
     return slot;
 }
 
-void DrawSSVEPCalibrationPlot(const char* id, const ImVec2& size, bool expanded, int board, const SSVEPCalibrationTrial& trial)
+float SpectrumPeakNear(const SSVEPCalibrationSpectrum& spec, float targetHz) {
+    if (!(targetHz > 0.0f) || spec.freq.empty()) return 0.0f;
+    int idx = 0;
+    double best = 1e300;
+    for (int i = 0; i < static_cast<int>(spec.freq.size()); ++i) {
+        const double diff = std::fabs(spec.freq[static_cast<size_t>(i)] - static_cast<double>(targetHz));
+        if (diff < best) {
+            best = diff;
+            idx = i;
+        }
+    }
+    float peak = 0.0f;
+    for (int ch = 0; ch < 4; ++ch) {
+        if (idx < static_cast<int>(spec.power[ch].size())) {
+            peak = std::max(peak, static_cast<float>(spec.power[ch][static_cast<size_t>(idx)]));
+        }
+    }
+    return peak;
+}
+
+void EnsureCalibrationLine(CalibrationSession& session, int board, const SSVEPCalibrationTrial& trial,
+    const SSVEPCalibrationSpectrum& spec, const float targetHz[4]) {
+    if (SSVEPBoardIsNull(board) || !trial.complete || targetHz == nullptr) return;
+    SSVEPBoardThreshold existing;
+    if (session.CopySnrThreshold(board, existing)) return;
+    const float peak = SpectrumPeakNear(spec, targetHz[board]);
+    if (!(peak > 0.0f)) return;
+
+    int n = static_cast<int>(trial.samples.size());
+    if (n % 2) --n;
+    float snr = 0.0f;
+    if (n >= 32) {
+        std::vector<float> column[4];
+        const float* ptrs[4] = {};
+        for (int ch = 0; ch < 4; ++ch) {
+            column[ch].resize(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i) column[ch][static_cast<size_t>(i)] = trial.samples[static_cast<size_t>(i)][ch];
+            ptrs[ch] = column[ch].data();
+        }
+        float scores[4] = {};
+        if (MeasureHarmonicSnr(ptrs, n, trial.samplingRate, targetHz, scores)) snr = scores[board];
+    }
+    session.NoteCalibrationSnr(board, snr, peak);
+}
+
+bool DrawSSVEPCalibrationPlot(const char* id, const ImVec2& size, bool expanded, int board,
+    const SSVEPCalibrationTrial& trial, CalibrationSession& session, const float targetHz[4])
 {
     const SSVEPCalibrationSpectrum& spec = CalibrationSpectrumFor(board, trial);
-    double yMax = 1.0;
+    EnsureCalibrationLine(session, board, trial, spec, targetHz);
+
+    SSVEPBoardThreshold threshold;
+    const bool showLine = !SSVEPBoardIsNull(board)
+        && session.CopySnrThreshold(board, threshold)
+        && threshold.peakPower > 0.0f;
+    const double lineY = showLine
+        ? static_cast<double>(threshold.peakPower) * static_cast<double>(threshold.lineScale)
+        : 0.0;
+
+    double yMax = 0.0;
     const int nFreq = static_cast<int>(spec.freq.size());
     for (int ch = 0; ch < 4; ++ch) {
         const int n = std::min(nFreq, static_cast<int>(spec.power[ch].size()));
         for (int i = 0; i < n; ++i) {
-            if (spec.freq[static_cast<size_t>(i)] < 0.0 || spec.freq[static_cast<size_t>(i)] > 40.0) continue;
+            const double f = spec.freq[static_cast<size_t>(i)];
+            if (f < 0.0 || f > 40.0) continue;
             yMax = std::max(yMax, spec.power[ch][static_cast<size_t>(i)]);
         }
     }
+    if (showLine) yMax = std::max(yMax, lineY);
+    if (yMax < 1e-12) yMax = 1.0;
     yMax *= 1.12;
 
-    const ImPlotFlags flags = expanded
-        ? (ImPlotFlags_NoMenus | ImPlotFlags_NoInputs)
-        : (ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoInputs);
-    if (!ImPlot::BeginPlot(id, size, flags)) return;
-    if (expanded) {
-        ImPlot::SetupAxes("Frequency (Hz)", "Power (\xC2\xB5V\xC2\xB2)");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 40.0, ImPlotCond_Always);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, yMax, ImPlotCond_Always);
+    struct ZoomSlot {
+        int n = -2;
+        int fs = -1;
+        float tail = 0.0f;
+        bool previewFitted = false;
+        bool expandedFitted = false;
+    };
+    static ZoomSlot zoomSlot[kSSVEPBoardCount];
+    bool refitY = true;
+    if (board >= 0 && board < kSSVEPBoardCount) {
+        ZoomSlot& slot = zoomSlot[board];
+        const int n = static_cast<int>(trial.samples.size());
+        const float tail = trial.samples.empty() ? 0.0f : trial.samples.back()[0];
+        if (slot.n != n || slot.fs != trial.samplingRate || slot.tail != tail) {
+            slot.n = n;
+            slot.fs = trial.samplingRate;
+            slot.tail = tail;
+            slot.previewFitted = false;
+            slot.expandedFitted = false;
+        }
+        bool& fitted = expanded ? slot.expandedFitted : slot.previewFitted;
+        refitY = !fitted;
     }
-    else {
-        ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 40.0, ImPlotCond_Always);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, yMax, ImPlotCond_Always);
+
+    ImPlotFlags flags = ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
+    if (!expanded) flags |= ImPlotFlags_NoLegend;
+    if (!ImPlot::BeginPlot(id, size, flags)) return false;
+    if (board >= 0 && board < kSSVEPBoardCount) {
+        bool& fitted = expanded ? zoomSlot[board].expandedFitted : zoomSlot[board].previewFitted;
+        fitted = true;
     }
+    const ImPlotAxisFlags xFlags = ImPlotAxisFlags_Lock
+        | (expanded ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoDecorations);
+    const ImPlotAxisFlags yFlags = expanded ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoDecorations;
+    ImPlot::SetupAxes(expanded ? "Frequency (Hz)" : nullptr, expanded ? "Power (\xC2\xB5V\xC2\xB2)" : nullptr, xFlags, yFlags);
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 40.0, ImPlotCond_Always);
+    if (refitY) ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, yMax, ImPlotCond_Always);
+    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, 0.0, yMax);
+    ImPlot::SetupAxisZoomConstraints(ImAxis_Y1, yMax * 1.0e-4, yMax);
 
     const ImVec4 cols[4] = {
         ImVec4(0.20f, 0.62f, 0.92f, 1.0f),
@@ -704,7 +792,210 @@ void DrawSSVEPCalibrationPlot(const char* id, const ImVec2& size, bool expanded,
         if (!expanded) line.Flags = ImPlotItemFlags_NoLegend;
         ImPlot::PlotLine(label, spec.freq.data(), spec.power[ch].data(), n, line);
     }
+
+    bool openClicked = false;
+    if (showLine) {
+        const ImVec4 guide(0.95f, 0.78f, 0.12f, 1.0f);
+        double y = lineY;
+        bool held = false;
+        if (ImPlot::DragLineY(board + 1, &y, guide, expanded ? 2.5f : 2.0f, ImPlotDragToolFlags_NoFit, nullptr, nullptr, &held)) {
+            y = std::max(0.0, y);
+            session.SetLineScale(board, static_cast<float>(y / threshold.peakPower));
+        }
+        if (expanded) {
+            const float shown = threshold.measuredSnr * threshold.lineScale;
+            ImPlot::TagY(y, guide, "SNR %.2f", shown);
+        }
+        if (!expanded && !held && ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            openClicked = true;
+        }
+    }
+    else if (!expanded && ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        openClicked = true;
+    }
     ImPlot::EndPlot();
+    return openClicked;
+}
+
+int RebuildLiveTestSpectrum(const EEGPlotSnapshot& snap, SSVEPCalibrationSpectrum& spec, float boardHz)
+{
+    spec = {};
+    spec.fs = snap.samplingRate;
+    if (snap.samplingRate < 30) return 0;
+    const int keep = snap.samplingRate * 5;
+    const double bandHigh = std::max(3.0, static_cast<double>(boardHz) * 2.0 + 2.0);
+    int built = 0;
+    for (int ch = 0; ch < 4; ++ch) {
+        int n = snap.liveCount[ch];
+        if (n % 2) --n;
+        if (n < 32) continue;
+        std::vector<double> row(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) row[static_cast<size_t>(i)] = snap.liveY[ch][static_cast<size_t>(i)];
+        try {
+            ApplyDisplaySpectrumFilter(row.data(), n, snap.samplingRate, 1.0, bandHigh);
+            int offset = 0;
+            const int settle = snap.samplingRate;
+            if (n > keep + settle) offset = n - keep;
+            else if (n > settle + 64) offset = settle;
+            if (offset % 2) --offset;
+            if (offset < 0) offset = 0;
+            const int psdN = n - offset;
+            if (psdN < 32 || (psdN % 2) != 0) continue;
+            int psdLen = 0;
+            auto psd = DataFilter::get_psd(
+                row.data() + offset, psdN, snap.samplingRate, (int)WindowOperations::HANNING, &psdLen);
+            if (psdLen <= 0 || !psd.first || !psd.second) {
+                delete[] psd.first;
+                delete[] psd.second;
+                continue;
+            }
+            if (spec.freq.empty()) spec.freq.assign(psd.second, psd.second + psdLen);
+            spec.power[ch].resize(static_cast<size_t>(psdLen));
+            for (int i = 0; i < psdLen; ++i) {
+                const double ampl = psd.first[i];
+                const double power = std::isfinite(ampl) ? ampl * ampl : 0.0;
+                spec.power[ch][static_cast<size_t>(i)] = std::isfinite(power) ? power : 0.0;
+            }
+            delete[] psd.first;
+            delete[] psd.second;
+            ++built;
+        }
+        catch (const BrainFlowException&) {
+            spec.power[ch].clear();
+        }
+    }
+    spec.n = built;
+    return built;
+}
+
+struct LiveTestSpectrumCache {
+    SSVEPCalibrationSpectrum spec;
+    int generation = 0;
+    double nextUpdate = 0.0;
+    float boardHz = -1.0f;
+};
+
+LiveTestSpectrumCache& TestSpectrumCache()
+{
+    static LiveTestSpectrumCache cache;
+    return cache;
+}
+
+bool LiveTestSpectrumReady()
+{
+    return !TestSpectrumCache().spec.freq.empty();
+}
+
+void DrawLiveTestSpectrum(const EEGPlotSnapshot& snap, const ImVec2& size, bool liveUpdate, float boardHz)
+{
+    LiveTestSpectrumCache& cache = TestSpectrumCache();
+    if (liveUpdate) {
+        const double now = glfwGetTime();
+        const bool hzChanged = std::fabs(cache.boardHz - boardHz) > 0.05f;
+        if (cache.spec.freq.empty() || hzChanged || now >= cache.nextUpdate) {
+            SSVEPCalibrationSpectrum next;
+            if (RebuildLiveTestSpectrum(snap, next, boardHz) > 0) {
+                cache.spec = std::move(next);
+                cache.boardHz = boardHz;
+                cache.generation++;
+                cache.nextUpdate = now + 2.0;
+            }
+        }
+    }
+
+    const SSVEPCalibrationSpectrum& spec = cache.spec;
+    const double xMin = 1.0;
+    const double xMax = std::max(xMin + 1.0, static_cast<double>(boardHz) * 2.0 + 2.0);
+    double yMax = 0.0;
+    const int nFreq = static_cast<int>(spec.freq.size());
+    for (int ch = 0; ch < 4; ++ch) {
+        const int n = std::min(nFreq, static_cast<int>(spec.power[ch].size()));
+        for (int i = 0; i < n; ++i) {
+            const double f = spec.freq[static_cast<size_t>(i)];
+            if (f < xMin || f > xMax) continue;
+            yMax = std::max(yMax, spec.power[ch][static_cast<size_t>(i)]);
+        }
+    }
+    if (yMax < 1e-12) yMax = 1.0;
+    yMax *= 1.12;
+
+    static int fittedLive = -1;
+    static int fittedStill = -1;
+    int& fitted = liveUpdate ? fittedLive : fittedStill;
+    ImPlotFlags flags = ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
+    if (!liveUpdate) flags |= ImPlotFlags_NoLegend | ImPlotFlags_NoInputs;
+    const ImPlotAxisFlags axisFlags = liveUpdate ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoDecorations;
+    if (!ImPlot::BeginPlot(liveUpdate ? "##CalibTestSpectrum" : "##CalibTestSpectrumStill", size, flags)) return;
+    ImPlot::SetupAxes(liveUpdate ? "Frequency (Hz)" : nullptr, liveUpdate ? "Power (\xC2\xB5V\xC2\xB2)" : nullptr,
+        ImPlotAxisFlags_Lock | axisFlags, axisFlags);
+    ImPlot::SetupAxisLimits(ImAxis_X1, xMin, xMax, ImPlotCond_Always);
+    if (fitted != cache.generation && nFreq > 2) {
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, yMax, ImPlotCond_Always);
+        fitted = cache.generation;
+    }
+    if (liveUpdate) {
+        ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, 0.0, yMax);
+        ImPlot::SetupAxisZoomConstraints(ImAxis_Y1, yMax * 1.0e-4, yMax);
+    }
+
+    const ImVec4 cols[4] = {
+        ImVec4(0.20f, 0.62f, 0.92f, 1.0f),
+        ImVec4(0.95f, 0.55f, 0.16f, 1.0f),
+        ImVec4(0.28f, 0.74f, 0.42f, 1.0f),
+        ImVec4(0.78f, 0.38f, 0.74f, 1.0f)
+    };
+    for (int ch = 0; ch < 4; ++ch) {
+        const int n = std::min(nFreq, static_cast<int>(spec.power[ch].size()));
+        if (n < 2) continue;
+        char label[16];
+        snprintf(label, sizeof(label), "Ch %d", ch + 1);
+        ImPlotSpec line;
+        line.LineColor = cols[ch];
+        line.LineWeight = 1.6f;
+        ImPlot::PlotLine(label, spec.freq.data(), spec.power[ch].data(), n, line);
+    }
+    ImPlot::EndPlot();
+}
+
+void DrawSSVEPFixation(ImDrawList* draw, ImVec2 topLeft, float side, float signal);
+
+void DrawFlickerSquare(ImDrawList* draw, ImVec2 origin, float side, float hz, bool nullBoard,
+    const SSVEPBoardLayout& layout, unsigned patternTex, unsigned patternInvTex, bool animate)
+{
+    const ImVec2 a = origin;
+    const ImVec2 b(a.x + side, a.y + side);
+    if (nullBoard) {
+        draw->AddRectFilled(a, b, IM_COL32(212, 168, 55, 90));
+        draw->AddRect(a, b, IM_COL32(184, 134, 11, 255), 0.0f, 0, 2.5f);
+        DrawSSVEPFixation(draw, a, side, 1.0f);
+        return;
+    }
+
+    const bool contrast = SSVEPPatternHasContrast(layout.patternMode) && layout.contrastMode;
+    float alpha = 1.0f;
+    if (animate) {
+        const double screenTarget = contrast ? (static_cast<double>(hz) / 2.0) : static_cast<double>(hz);
+        const double phase = std::fmod(glfwGetTime() * screenTarget, 1.0);
+        alpha = (phase < 0.5) ? 1.0f : 0.0f;
+        if (layout.smoothMode) {
+            alpha = 0.5f - 0.5f * static_cast<float>(std::cos(2.0 * 3.14159265358979 * phase));
+        }
+    }
+    const ImU8 aVal = static_cast<ImU8>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+    if (SSVEPPatternHasContrast(layout.patternMode) && patternTex) {
+        if (contrast && patternInvTex) {
+            draw->AddImage((ImTextureID)(intptr_t)patternInvTex, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255));
+            draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, aVal));
+        }
+        else {
+            draw->AddImage((ImTextureID)(intptr_t)patternTex, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(aVal, aVal, aVal, 255));
+        }
+    }
+    else {
+        draw->AddRectFilled(a, b, IM_COL32(aVal, aVal, aVal, 255));
+    }
+    draw->AddRect(a, b, IM_COL32(80, 80, 80, 255));
+    DrawSSVEPFixation(draw, a, side, alpha);
 }
 
 void DrawSSVEPCalibrationTab(SSVEPBoardLayout& layout, float dpi, bool connected,
@@ -712,6 +1003,9 @@ void DrawSSVEPCalibrationTab(SSVEPBoardLayout& layout, float dpi, bool connected
     UIManager& ui)
 {
     static int openBoard = -1;
+    static bool openTest = false;
+    static float testHz = 10.0f;
+    ui.SSVEPCalibTestOpen = false;
     const float btnW = 160.0f * dpi;
     const bool canStart = connected && !session.IsActive();
 
@@ -774,7 +1068,7 @@ void DrawSSVEPCalibrationTab(SSVEPBoardLayout& layout, float dpi, bool connected
             std::max(80.0f, ImGui::GetContentRegionAvail().y - buttonRow - backRow));
         SSVEPCalibrationTrial openTrial;
         session.CopyTrial(openBoard, openTrial);
-        DrawSSVEPCalibrationPlot("##SSVEPCalExpanded", plotSize, true, openBoard, openTrial);
+        DrawSSVEPCalibrationPlot("##SSVEPCalExpanded", plotSize, true, openBoard, openTrial, session, layout.customHz);
 
         const float pairW = btnW * 2.0f + 8.0f * dpi + saveGap + saveBtnW;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - pairW) * 0.5f));
@@ -793,13 +1087,74 @@ void DrawSSVEPCalibrationTab(SSVEPBoardLayout& layout, float dpi, bool connected
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.22f, 0.22f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.70f, 0.08f, 0.08f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        SSVEPBoardThreshold openThreshold;
+        const bool canReset = session.CopySnrThreshold(openBoard, openThreshold);
+        ImGui::BeginDisabled(!canReset);
         if (ImGui::Button("Reset threshold", ImVec2(btnW, 0.0f))) {
+            session.ResetSnrThreshold(openBoard);
         }
+        ImGui::EndDisabled();
         ImGui::PopStyleColor(4);
+        if (!canReset && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Calibrate this board first");
+        }
 
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - btnW) * 0.5f));
         if (ImGui::Button("Back", ImVec2(btnW, 0.0f))) {
             openBoard = -1;
+        }
+        return;
+    }
+
+    if (openTest) {
+        ui.SSVEPCalibTestOpen = true;
+        ui.signalTabActive.store(true);
+        const ImVec4 testBlue(0.12f, 0.45f, 0.95f, 1.0f);
+        DrawSSVEPCalibrationTitle("Test", false, font, &testBlue);
+        const float backRow = ImGui::GetFrameHeight() + 8.0f * dpi;
+        const float bodyH = std::max(80.0f, ImGui::GetContentRegionAvail().y - backRow);
+        const float splitGap = 12.0f * dpi;
+        const float leftW = std::min(bodyH, std::max(80.0f, ImGui::GetContentRegionAvail().x * 0.42f));
+
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.93f, 0.93f, 0.93f, 1.0f));
+        ImGui::BeginChild("##CalibTestBoard", ImVec2(leftW, bodyH), ImGuiChildFlags_Borders,
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        const float controlsH = ImGui::GetFrameHeight() + 10.0f * dpi;
+        const ImVec2 boardAvail = ImGui::GetContentRegionAvail();
+        const float roomY = std::max(8.0f, boardAvail.y - controlsH);
+        const float side = std::max(8.0f, std::min(boardAvail.x, roomY) - 8.0f * dpi);
+        const ImVec2 boardOrigin(
+            ImGui::GetCursorScreenPos().x + (boardAvail.x - side) * 0.5f,
+            ImGui::GetCursorScreenPos().y + std::max(0.0f, (roomY - side) * 0.5f));
+        DrawFlickerSquare(ImGui::GetWindowDrawList(), boardOrigin, side, testHz, false,
+            layout, patternTex, patternInvTex, true);
+        ImGui::Dummy(ImVec2(0.0f, roomY));
+        const float inputW = 110.0f * dpi;
+        const float hzLabelW = ImGui::CalcTextSize("Hz").x;
+        const float rowW = inputW + ImGui::GetStyle().ItemSpacing.x + hzLabelW;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - rowW) * 0.5f));
+        ImGui::SetNextItemWidth(inputW);
+        ImGui::InputFloat("##TestHz", &testHz, 0.1f, 1.0f, "%.1f");
+        if (testHz < 0.5f) testHz = 0.5f;
+        if (testHz > 60.0f) testHz = 60.0f;
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Hz");
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+
+        ImGui::SameLine(0.0f, splitGap);
+        ImGui::BeginChild("##CalibTestGraph", ImVec2(0.0f, bodyH), ImGuiChildFlags_Borders);
+        EEGPlotSnapshot live;
+        {
+            std::lock_guard<std::mutex> lock(ui.eegPlotMutex);
+            live = ui.eegPlot;
+        }
+        DrawLiveTestSpectrum(live, ImGui::GetContentRegionAvail(), true, testHz);
+        ImGui::EndChild();
+
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - btnW) * 0.5f));
+        if (ImGui::Button("Back", ImVec2(btnW, 0.0f))) {
+            openTest = false;
         }
         return;
     }
@@ -820,14 +1175,11 @@ void DrawSSVEPCalibrationTab(SSVEPBoardLayout& layout, float dpi, bool connected
         if (ImGui::IsItemClicked()) openBoard = board;
 
         const ImVec2 plotSize(std::max(1.0f, ImGui::GetContentRegionAvail().x), plotH);
-        const ImVec2 plotPos = ImGui::GetCursorScreenPos();
         SSVEPCalibrationTrial previewTrial;
         session.CopyTrial(board, previewTrial);
-        DrawSSVEPCalibrationPlot("##SSVEPCalPreview", plotSize, false, board, previewTrial);
-        const ImVec2 afterPlot = ImGui::GetCursorScreenPos();
-        ImGui::SetCursorScreenPos(plotPos);
-        if (ImGui::InvisibleButton("##openPreview", plotSize)) openBoard = board;
-        ImGui::SetCursorScreenPos(afterPlot);
+        if (DrawSSVEPCalibrationPlot("##SSVEPCalPreview", plotSize, false, board, previewTrial, session, layout.customHz)) {
+            openBoard = board;
+        }
 
         const float innerW = std::max(1.0f, ImGui::GetContentRegionAvail().x);
         const float calW = std::min(btnW, std::max(1.0f, innerW - saveGap - saveBtnW));
@@ -859,6 +1211,43 @@ void DrawSSVEPCalibrationTab(SSVEPBoardLayout& layout, float dpi, bool connected
     }
     ImGui::SameLine(0.0f, saveGap);
     drawSave("##saveAll", allCalibrated, -1);
+
+    ImGui::Dummy(ImVec2(0.0f, 8.0f * dpi));
+    const float panelH = std::max(280.0f * dpi, ImGui::GetContentRegionAvail().y);
+    ImGui::BeginChild("##CalibTestPanel", ImVec2(0.0f, panelH), ImGuiChildFlags_Borders,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const ImVec4 testBlue(0.12f, 0.45f, 0.95f, 1.0f);
+    DrawSSVEPCalibrationTitle("Test", false, font, &testBlue);
+    ImGui::Dummy(ImVec2(0.0f, 6.0f * dpi));
+    const ImVec4 plotBg = ImPlot::GetStyle().Colors[ImPlotCol_PlotBg];
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, plotBg);
+    ImGui::BeginChild("##CalibTestPreview", ImVec2(0.0f, std::max(1.0f, ImGui::GetContentRegionAvail().y)),
+        ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const ImVec2 boxOrigin = ImGui::GetCursorScreenPos();
+    const ImVec2 box = ImGui::GetContentRegionAvail();
+    const float previewGap = 8.0f * dpi;
+    const float previewSide = std::max(8.0f, std::min(box.y, box.x * 0.34f));
+    const ImVec2 patternOrigin(
+        boxOrigin.x + 4.0f * dpi,
+        boxOrigin.y + std::max(0.0f, (box.y - previewSide) * 0.5f));
+    DrawFlickerSquare(ImGui::GetWindowDrawList(), patternOrigin, previewSide, 0.0f, false,
+        layout, patternTex, patternInvTex, false);
+    const float plotX = patternOrigin.x + previewSide + previewGap;
+    const float plotW = std::max(1.0f, boxOrigin.x + box.x - plotX);
+    if (!LiveTestSpectrumReady()) ui.signalTabActive.store(true);
+    EEGPlotSnapshot still;
+    if (!LiveTestSpectrumReady()) {
+        std::lock_guard<std::mutex> lock(ui.eegPlotMutex);
+        still = ui.eegPlot;
+    }
+    ImGui::SetCursorScreenPos(ImVec2(plotX, boxOrigin.y));
+    DrawLiveTestSpectrum(still, ImVec2(plotW, box.y), !LiveTestSpectrumReady(), testHz);
+    ImGui::SetCursorScreenPos(boxOrigin);
+    if (ImGui::InvisibleButton("##openCalibTest", box)) openTest = true;
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
 }
 
 void DrawSSVEPFixation(ImDrawList* draw, ImVec2 topLeft, float side, float signal)
@@ -893,7 +1282,8 @@ void DrawSSVEPFixation(ImDrawList* draw, ImVec2 topLeft, float side, float signa
 
 void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dpi, ImFont* keyFont,
     SSVEPBoardLayout* layout, bool* layoutInit, float monitorW, float monitorH,
-    int refreshHz, std::uint64_t frame, unsigned int patternTex, unsigned int patternInvTex) {
+    int refreshHz, std::uint64_t frame, unsigned int patternTex, unsigned int patternInvTex,
+    bool holdStill) {
     if (size.x < 8.0f || size.y < 8.0f || !layout || !layoutInit) return;
 
     const float monitorPad = 10.0f * dpi;
@@ -1166,7 +1556,7 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
             double screenTarget = 0.0;
             double phase = 0.0;
             float alpha = 1.0f;
-            if (!nullBoard) {
+            if (!nullBoard && !holdStill) {
                 screenTarget = contrast ? (static_cast<double>(layout->customHz[i]) / 2.0) : static_cast<double>(layout->customHz[i]);
                 phase = std::fmod(timeNow * screenTarget, 1.0);
                 const bool on = phase < 0.5;
@@ -1361,7 +1751,8 @@ void DrawSSVEPPreviewBoards(ImVec2 origin, ImVec2 size, bool previewOn, float dp
 
 bool DrawSSVEPTestScreen(float dpi, ImFont* keyFont, const SSVEPBoardLayout& layout,
     const int* seq, int seqLen, int* seqIndex, int* seqCorrect, bool* seqHit, bool* seqDone,
-    int refreshHz, std::uint64_t frame, unsigned int patternTex, unsigned int patternInvTex) {
+    int refreshHz, std::uint64_t frame, unsigned int patternTex, unsigned int patternInvTex,
+    bool holdStill) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
     ImGui::SetNextWindowSize(display);
@@ -1422,12 +1813,12 @@ bool DrawSSVEPTestScreen(float dpi, ImFont* keyFont, const SSVEPBoardLayout& lay
         // 1. Time-Based Absolute Frequency Math
         bool contrast = SSVEPPatternHasContrast(layout.patternMode) && layout.contrastMode;
         double screenTarget = contrast ? (static_cast<double>(layout.customHz[i]) / 2.0) : static_cast<double>(layout.customHz[i]);
-        double phase = std::fmod(timeNow * screenTarget, 1.0);
-        bool on = phase < 0.5;
+        double phase = holdStill ? 0.0 : std::fmod(timeNow * screenTarget, 1.0);
+        bool on = holdStill || phase < 0.5;
         
         // 2. Alpha Interpolation
         float alpha = on ? 1.0f : 0.0f;
-        if (layout.smoothMode) {
+        if (!holdStill && layout.smoothMode) {
             alpha = 0.5f - 0.5f * static_cast<float>(std::cos(2.0 * 3.14159265358979 * phase));
         }
 
@@ -2214,32 +2605,31 @@ const char* FormatHz(float hz, char* buf, int n) {
 }
 }
 
-void UIManager::DrawSignalSpectrumPanel() {
-    SSVEPDetectSnapshot snap;
-    {
-        std::lock_guard<std::mutex> lock(eegPlotMutex);
-        snap = SSVEPDetect;
-    }
-
+void DrawSSVEPScoreGraph(const SSVEPDetectSnapshot& snap) {
     char hzBuf[4][16];
     for (int i = 0; i < 4; ++i) FormatHz(snap.targetHz[i], hzBuf[i], sizeof(hzBuf[i]));
 
-    if (!snap.ready || snap.votedWinner < 0) {
+    if (!snap.ready) {
         ImGui::Text("Collecting EEG for SSVEP… %.1f / %.0f s",
             snap.secondsCollected, snap.windowSec);
     }
-    else {
-        ImGui::Text("Detected: %s Hz (%d/%d votes)    this window: %s Hz",
-            hzBuf[snap.votedWinner], snap.votesForWinner, std::max(1, snap.votesCast),
-            (snap.windowWinner >= 0) ? hzBuf[snap.windowWinner] : "-");
+    else if (snap.votedWinner >= 0) {
+        ImGui::Text("Detected: %s Hz    FBCCA %.3f    SNR %.2f",
+            hzBuf[snap.votedWinner], snap.corr[snap.votedWinner], snap.harmonicSnr[snap.votedWinner]);
     }
-    ImGui::TextDisabled("Gate Ratio: %.2f", snap.gateRatio);
+    else if (snap.windowWinner >= 0 && snap.snrGate[snap.windowWinner]) {
+        ImGui::Text("Below threshold: %s Hz    SNR %.2f <= %.2f",
+            hzBuf[snap.windowWinner], snap.harmonicSnr[snap.windowWinner], snap.appliedSnr[snap.windowWinner]);
+    }
+    else {
+        ImGui::Text("Collecting EEG for SSVEP… %.1f / %.0f s",
+            snap.secondsCollected, snap.windowSec);
+    }
 
     const float plotH = std::max(48.0f, ImGui::GetContentRegionAvail().y);
     const ImPlotFlags flags = ImPlotFlags_NoTitle | ImPlotFlags_NoLegend |
         ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
 
-    // 1. Determine X-axis bounds based on the actual target frequencies
     float minHz = snap.targetHz[0];
     float maxHz = snap.targetHz[0];
     for (int i = 1; i < 4; ++i) {
@@ -2249,63 +2639,66 @@ void UIManager::DrawSignalSpectrumPanel() {
     double plotMin = static_cast<double>(minHz) - 2.0;
     double plotMax = static_cast<double>(maxHz) + 2.0;
 
-    // 2. Generate the smooth "Mountain" probability distribution curve
     const int curvePoints = 100;
     double xs[curvePoints];
     double ys[curvePoints];
-    
-    // Adjust 'sigma' to make the peaks wider (blend together) or narrower (sharp spikes)
-    const double sigma = 1.2; 
+    const double sigma = 1.2;
     const double two_sigma_sq = 2.0 * sigma * sigma;
-    double distMaxY = 0.01; // Base minimum Y to prevent axis collapsing
+    double distMaxY = 0.01;
 
     for (int p = 0; p < curvePoints; ++p) {
         xs[p] = plotMin + p * (plotMax - plotMin) / (curvePoints - 1);
         double y_val = 0.0;
-        
-        // Sum the Gaussian distributions centered at each target frequency
         for (int i = 0; i < 4; ++i) {
             double diff = xs[p] - snap.targetHz[i];
-            double weight = std::max(0.0f, snap.corr[i]); // CCA Score acts as the peak height
+            double weight = std::max(0.0f, snap.corr[i]);
             y_val += weight * std::exp(-(diff * diff) / two_sigma_sq);
         }
-        
         ys[p] = y_val;
         if (y_val > distMaxY) distMaxY = y_val;
     }
 
+    const bool detected = snap.ready && snap.votedWinner >= 0;
+    const ImVec4 areaColor = detected
+        ? ImVec4(0.85f, 0.20f, 0.15f, 1.0f)
+        : ImVec4(0.18f, 0.18f, 0.20f, 1.0f);
+
     if (ImPlot::BeginPlot("##SSVEP_cca_dist", ImVec2(-1.0f, plotH), flags)) {
-        ImPlot::SetupAxes("Target Frequencies (Hz)", "CCA Probability", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+        ImPlot::SetupAxes("Target Frequencies (Hz)", "FBCCA score", ImPlotAxisFlags_NoGridLines, ImPlotAxisFlags_None);
         ImPlot::SetupAxesLimits(plotMin, plotMax, 0.0, distMaxY * 1.15, ImPlotCond_Always);
-        
-        // Draw the shaded area inside the mountain using ImPlotSpec (Red theme)
+
         ImPlotSpec fillSpec;
-        fillSpec.FillColor = ImVec4(0.85f, 0.20f, 0.15f, 1.0f); // Red
-        fillSpec.FillAlpha = 0.4f;                              // Transparency
+        fillSpec.FillColor = areaColor;
+        fillSpec.FillAlpha = detected ? 0.40f : 0.90f;
         fillSpec.Flags = ImPlotItemFlags_NoLegend;
         ImPlot::PlotShaded("##cca_fill", xs, ys, curvePoints, 0.0, fillSpec);
 
-        // Draw the solid mountain outline curve using ImPlotSpec (Red theme)
         ImPlotSpec lineSpec;
-        lineSpec.LineColor = ImVec4(0.85f, 0.20f, 0.15f, 1.0f); // Red
+        lineSpec.LineColor = areaColor;
         lineSpec.LineWeight = 2.0f;
         lineSpec.Flags = ImPlotItemFlags_NoLegend;
         ImPlot::PlotLine("cca_curve", xs, ys, curvePoints, lineSpec);
 
-        // Draw the vertical lines identifying the actual targets
         for (int i = 0; i < 4; ++i) {
-            const bool voted = (i == snap.votedWinner);
             ImPlotSpec line;
-            // Bright solid red if voted winner, otherwise slightly transparent red (replacing gray)
-            line.LineColor = voted ? ImVec4(1.0f, 0.1f, 0.1f, 1.0f) : ImVec4(0.85f, 0.20f, 0.15f, 0.5f);
-            line.LineWeight = voted ? 2.5f : 1.0f;
+            line.LineColor = ImVec4(0.15f, 0.78f, 0.28f, 1.0f);
+            line.LineWeight = 3.5f;
             line.Flags = ImPlotItemFlags_NoLegend;
             const double x = snap.targetHz[i];
             ImPlot::PlotInfLines(hzBuf[i], &x, 1, line);
         }
-        
+
         ImPlot::EndPlot();
     }
+}
+
+void UIManager::DrawSignalSpectrumPanel() {
+    SSVEPDetectSnapshot snap;
+    {
+        std::lock_guard<std::mutex> lock(eegPlotMutex);
+        snap = SSVEPDetect;
+    }
+    DrawSSVEPScoreGraph(snap);
 }
 
 void UIManager::RenderUI() {
@@ -2327,7 +2720,8 @@ void UIManager::RenderUI() {
         // Pass m_swapInterval as the new final argument here
         if (DrawSSVEPTestScreen(m_dpiScale, SSVEPKeyFont, SSVEPBoardLayout,
             SSVEPTestSeq, SSVEPTestSeqLen, &SSVEPTestIndex, &SSVEPTestCorrect,
-            SSVEPTestHit, &SSVEPTestDone, refresh, SSVEPFrame, patternTex, patternInvTex)) {
+            SSVEPTestHit, &SSVEPTestDone, refresh, SSVEPFrame, patternTex, patternInvTex,
+            ssvepFlickerPaused.load())) {
             SSVEPTestMode = false;
             LeaveSSVEPTestFullscreen(window, m_preTestX, m_preTestY, m_preTestW, m_preTestH, m_swapInterval);
         }
@@ -2547,7 +2941,8 @@ void UIManager::RenderUI() {
                 GetContainingMonitorSize(window, &monitorW, &monitorH);
 
                 DrawSSVEPPreviewBoards(previewOrigin, previewSize, SSVEPPreviewEnabled, m_dpiScale, SSVEPKeyFont,
-                    &SSVEPBoardLayout, &SSVEPBoardLayoutInit, monitorW, monitorH, refresh, SSVEPFrame, patternTex, patternInvTex);
+                    &SSVEPBoardLayout, &SSVEPBoardLayoutInit, monitorW, monitorH, refresh, SSVEPFrame, patternTex, patternInvTex,
+                    ssvepFlickerPaused.load());
 
                 ImGui::Dummy(previewSize);
 

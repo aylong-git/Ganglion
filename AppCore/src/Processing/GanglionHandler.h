@@ -15,6 +15,7 @@ class EEGRecorder;
 class CalibrationSession;
 
 static constexpr int kEEGPlotDisplayCapacity = 1000; // ~5 s at 200 Hz shown in Signal
+static constexpr int kEEGLiveSpectrumCapacity = 10 * 200; // filter settle time plus the 5 s Hann window
 // Order-6 Butterworth startup lasts about (order / low_cutoff) seconds.
 // The plot edge can fall to 0.5 Hz, which needs ~12 s. The visible window
 // still shows the latest ~5 s after that prefix is dropped.
@@ -28,6 +29,9 @@ struct EEGPlotSnapshot {
     std::array<bool, 4> hadData{};
     std::array<std::array<float, kEEGPlotCapacity>, 4> t{};
     std::array<std::array<float, kEEGPlotCapacity>, 4> y{};
+    // Raw EEG kept before the plot bandpass overwrites y.
+    std::array<int, 4> liveCount{};
+    std::array<std::array<float, kEEGLiveSpectrumCapacity>, 4> liveY{};
 };
 
 class GanglionHandler {
@@ -48,6 +52,7 @@ public:
     void SetMonitorRefreshHz(int hz);
     void SetTargetFrequencies(const float hz[4]);
     void SetSSVEPWindow(float windowSeconds);
+    bool FlickerPaused() const { return flickerPaused.load(); }
     SSVEPDetectSnapshot GetSSVEPSnapshot();
 
     bool StartImpedanceMode(const std::string& port, const std::string& macAddress);
@@ -96,6 +101,7 @@ private:
     double sessionStartTs = -1.0;
     std::uint64_t sampleIndex = 0;
     std::uint64_t lastDetectSample = 0;
+    std::atomic<bool> flickerPaused{ false };
     bool lastDetectEnabled[4] = { false, false, false, false };
     int monitorRefreshHz = 60;
     SSVEPDetector ssvepDetector;

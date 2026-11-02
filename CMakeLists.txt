@@ -120,7 +120,7 @@ if(APPLE)
         INSTALL_RPATH "@executable_path"
     )
 elseif(WIN32)
-    target_link_libraries(Ganglion_SSVEP PRIVATE opengl32 setupapi ole32 uuid dwmapi)
+    target_link_libraries(Ganglion_SSVEP PRIVATE opengl32 setupapi ole32 uuid dwmapi winmm)
 endif()
 
 file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/AppCore/assets" GANGLION_ASSET_DIR_NORM)

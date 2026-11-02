@@ -64,6 +64,7 @@ public:
     EEGPlotSnapshot eegPlot;
     SSVEPDetectSnapshot SSVEPDetect;
     std::atomic<bool> signalTabActive{ false };
+    std::atomic<bool> ssvepFlickerPaused{ false };
     std::atomic<int> monitorRefreshHz{ 60 };
     std::uint64_t SSVEPFrame = 0;
 
@@ -95,6 +96,7 @@ public:
     int m_swapInterval = 1;
     float SSVEPWindowDuration = 5.0f;
     bool SSVEPPreviewEnabled = false;
+    bool SSVEPCalibTestOpen = false;
     bool SSVEPTestMode = false;
     int SSVEPTestSeq[12] = {};
     int SSVEPTestSeqLen = 0;

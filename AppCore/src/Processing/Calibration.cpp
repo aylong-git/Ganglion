@@ -5,6 +5,7 @@
 #endif
 
 #include "Calibration.h"
+#include "SSVEPClassifier.h"
 
 #include "InputManager.h"
 #include "KeyIconCatalog.h"
@@ -261,17 +262,94 @@ void CalibrationSession::ClearTrial(int board) {
     if (board < 0 || board >= kSSVEPFlickerBoardCount) return;
     std::lock_guard<std::mutex> lock(mutex_);
     stored_[board] = {};
+    threshold_[board] = {};
+}
+
+void CalibrationSession::NoteCalibrationSnr(int board, float measuredSnr, float peakPower) {
+    if (board < 0 || board >= kSSVEPFlickerBoardCount) return;
+    if (!(peakPower > 0.0f)) return;
+    measuredSnr = std::max(0.0f, measuredSnr);
+    std::lock_guard<std::mutex> lock(mutex_);
+    SSVEPBoardThreshold& slot = threshold_[board];
+    const float automatic = 0.70f * measuredSnr;
+    const float measuredScale = std::max(1.0f, measuredSnr);
+    const float powerScale = std::max(1.0f, peakPower);
+    const bool same = slot.valid
+        && std::fabs(slot.measuredSnr - measuredSnr) <= 1.0e-4f * measuredScale
+        && std::fabs(slot.peakPower - peakPower) <= 1.0e-4f * powerScale;
+    if (same) return;
+    slot.valid = true;
+    slot.measuredSnr = measuredSnr;
+    slot.autoSnr = automatic;
+    slot.appliedSnr = automatic;
+    slot.peakPower = peakPower;
+    slot.lineScale = 0.70f;
+}
+
+void CalibrationSession::SetLineScale(int board, float lineScale) {
+    if (board < 0 || board >= kSSVEPFlickerBoardCount) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!threshold_[board].valid) return;
+    SSVEPBoardThreshold& slot = threshold_[board];
+    slot.lineScale = std::max(0.0f, lineScale);
+    slot.appliedSnr = slot.measuredSnr * slot.lineScale;
+}
+
+void CalibrationSession::ResetSnrThreshold(int board) {
+    if (board < 0 || board >= kSSVEPFlickerBoardCount) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!threshold_[board].valid) return;
+    threshold_[board].lineScale = 0.70f;
+    threshold_[board].appliedSnr = threshold_[board].autoSnr;
+}
+
+bool CalibrationSession::CopySnrThreshold(int board, SSVEPBoardThreshold& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (board < 0 || board >= kSSVEPFlickerBoardCount || !threshold_[board].valid) {
+        out = {};
+        return false;
+    }
+    out = threshold_[board];
+    return true;
 }
 
 void CalibrationSession::CommitCurrent() {
     if (queueIndex_ < 0 || queueIndex_ >= static_cast<int>(queue_.size())) return;
     const int board = queue_[queueIndex_];
-    std::lock_guard<std::mutex> lock(mutex_);
-    stored_[board].samples = std::move(scratchSamples_);
-    scratchSamples_.clear();
-    stored_[board].samplingRate = scratchRate_ > 0 ? scratchRate_ : 200;
-    stored_[board].complete = true;
-    recording_ = false;
+    std::vector<std::array<float, 4>> samples;
+    int rate = 200;
+    float hz[4] = {};
+    bool score = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stored_[board].samples = std::move(scratchSamples_);
+        scratchSamples_.clear();
+        stored_[board].samplingRate = scratchRate_ > 0 ? scratchRate_ : 200;
+        stored_[board].complete = true;
+        recording_ = false;
+        if (!SSVEPBoardIsNull(board)) {
+            samples = stored_[board].samples;
+            rate = stored_[board].samplingRate;
+            for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) hz[i] = layout_.customHz[i];
+            score = true;
+        }
+    }
+    if (!score) return;
+
+    int n = static_cast<int>(samples.size());
+    if (n % 2) --n;
+    if (n < 32) return;
+    std::vector<float> column[4];
+    const float* ptrs[4] = {};
+    for (int ch = 0; ch < 4; ++ch) {
+        column[ch].resize(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) column[ch][static_cast<size_t>(i)] = samples[static_cast<size_t>(i)][ch];
+        ptrs[ch] = column[ch].data();
+    }
+    float snr[4] = {};
+    if (!MeasureHarmonicSnr(ptrs, n, rate, hz, snr)) return;
+    const float peak = HannPeakPower(ptrs, n, rate, hz[board]);
+    NoteCalibrationSnr(board, snr[board], peak);
 }
 
 void CalibrationSession::Advance(double nowSec) {

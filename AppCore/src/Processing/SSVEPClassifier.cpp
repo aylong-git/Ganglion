@@ -120,6 +120,205 @@ Eigen::MatrixXd ReferenceMatrix(double freqHz, int nSamples, int fs) {
     }
     return X;
 }
+
+constexpr float kChannelWeight[4] = { 0.20f, 0.30f, 0.30f, 0.20f };
+constexpr float kCcaPenalty = 0.20f;
+constexpr float kFbccaA = 1.25f;
+constexpr float kFbccaB = 0.25f;
+
+void BandEdges(const float targetHz[4], int fs, double& low, double& high) {
+    float minHz = targetHz[0];
+    float maxHz = targetHz[0];
+    for (int i = 1; i < 4; ++i) {
+        minHz = std::min(minHz, targetHz[i]);
+        maxHz = std::max(maxHz, targetHz[i]);
+    }
+    low = std::floor(static_cast<double>(minHz) - 2.0);
+    high = std::floor(static_cast<double>(maxHz) * 2.0 + 2.0);
+    const double nyquist = 0.5 * static_cast<double>(fs) - 1.0;
+    if (low < 0.5) low = 0.5;
+    if (high > nyquist) high = nyquist;
+    if (high < low + 6.0) high = std::min(nyquist, low + 6.0);
+}
+
+struct FbccaBand {
+    double low = 0.0;
+    double high = 0.0;
+    double weight = 0.0;
+};
+
+int BuildFbccaBands(const float targetHz[4], int fs, FbccaBand* out, int cap) {
+    double bpLow = 0.0;
+    double bpHigh = 0.0;
+    BandEdges(targetHz, fs, bpLow, bpHigh);
+    float base = targetHz[0];
+    for (int i = 1; i < 4; ++i) base = std::min(base, targetHz[i]);
+    int n = 0;
+    for (int harmonic = 1; harmonic <= 8 && n < cap; ++harmonic) {
+        const double low = std::max(bpLow, static_cast<double>(harmonic) * base - 2.0);
+        if (bpHigh - low < 6.0) break;
+        out[n].low = low;
+        out[n].high = bpHigh;
+        out[n].weight = std::pow(static_cast<double>(harmonic), -static_cast<double>(kFbccaA)) + kFbccaB;
+        ++n;
+    }
+    if (n == 0 && cap > 0) {
+        out[0].low = bpLow;
+        out[0].high = bpHigh;
+        out[0].weight = 1.0;
+        n = 1;
+    }
+    return n;
+}
+
+double PenalizedCca(const Eigen::MatrixXd& eeg, const Eigen::MatrixXd& ref, const Eigen::VectorXd& penalty) {
+    const int n = static_cast<int>(eeg.rows());
+    if (n < 8 || eeg.cols() < 1 || ref.cols() < 1 || penalty.size() != eeg.cols()) return 0.0;
+
+    Eigen::MatrixXd X = eeg.rowwise() - eeg.colwise().mean();
+    Eigen::MatrixXd Y = ref.rowwise() - ref.colwise().mean();
+    auto scaleCols = [](Eigen::MatrixXd& m) {
+        const double denom = static_cast<double>(m.rows());
+        for (int c = 0; c < m.cols(); ++c) {
+            const double sd = std::sqrt(m.col(c).squaredNorm() / denom);
+            m.col(c) /= (sd < 1e-12) ? 1.0 : sd;
+        }
+    };
+    scaleCols(X);
+    scaleCols(Y);
+
+    Eigen::MatrixXd Cxx = (X.transpose() * X) / static_cast<double>(n);
+    Eigen::MatrixXd Cyy = (Y.transpose() * Y) / static_cast<double>(n);
+    const Eigen::MatrixXd Cxy = (X.transpose() * Y) / static_cast<double>(n);
+    for (int c = 0; c < Cxx.cols(); ++c) Cxx(c, c) += std::max(0.0, penalty(c));
+    Cyy.diagonal().array() += 1e-6;
+
+    Eigen::LDLT<Eigen::MatrixXd> ldltX(Cxx);
+    Eigen::LDLT<Eigen::MatrixXd> ldltY(Cyy);
+    if (ldltX.info() != Eigen::Success || ldltY.info() != Eigen::Success) return 0.0;
+
+    const Eigen::MatrixXd M = ldltX.solve(Cxy) * ldltY.solve(Cxy.transpose());
+    Eigen::EigenSolver<Eigen::MatrixXd> eigen(M, false);
+    if (eigen.info() != Eigen::Success) return 0.0;
+    double best = 0.0;
+    for (int i = 0; i < eigen.eigenvalues().size(); ++i) {
+        best = std::max(best, eigen.eigenvalues()(i).real());
+    }
+    best = std::min(1.0, std::max(0.0, best));
+    return std::sqrt(best);
+}
+
+int CopyEven(const float* src, int n, std::vector<double>& out) {
+    if (!src || n < 32) return 0;
+    if (n % 2) --n;
+    out.resize(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) out[static_cast<size_t>(i)] = static_cast<double>(src[i]);
+    return n;
+}
+
+bool PowerSpectrum(std::vector<double>& row, int fs, std::vector<double>& power, std::vector<double>& freqs) {
+    const int n = static_cast<int>(row.size());
+    if (n < 32 || (n % 2) != 0) return false;
+    int psdLen = 0;
+    auto psd = DataFilter::get_psd(row.data(), n, fs, (int)WindowOperations::HANNING, &psdLen);
+    if (psdLen <= 1 || !psd.first || !psd.second) {
+        delete[] psd.first;
+        delete[] psd.second;
+        return false;
+    }
+    power.resize(static_cast<size_t>(psdLen));
+    freqs.resize(static_cast<size_t>(psdLen));
+    for (int i = 0; i < psdLen; ++i) {
+        const double ampl = psd.first[i];
+        power[static_cast<size_t>(i)] = ampl * ampl;
+        freqs[static_cast<size_t>(i)] = psd.second[i];
+    }
+    delete[] psd.first;
+    delete[] psd.second;
+    return true;
+}
+}
+
+bool MeasureHarmonicSnr(const float* const channels[4], int nSamples, int fs,
+    const float targetHz[4], float outSnr[4]) {
+    for (int t = 0; t < 4; ++t) outSnr[t] = 0.0f;
+    if (!channels || !targetHz || nSamples < 32 || fs < 30) return false;
+
+    double bpLow = 0.0;
+    double bpHigh = 0.0;
+    BandEdges(targetHz, fs, bpLow, bpHigh);
+
+    bool any = false;
+    for (int ch = 0; ch < 4; ++ch) {
+        if (!channels[ch]) continue;
+        std::vector<double> row;
+        const int n = CopyEven(channels[ch], nSamples, row);
+        if (n < 32) continue;
+        try {
+            DataFilter::detrend(row.data(), n, (int)DetrendOperations::CONSTANT);
+            DataFilter::perform_bandstop(row.data(), n, fs, 48.0, 52.0, 4,
+                (int)FilterTypes::BUTTERWORTH, 0.0);
+            DataFilter::perform_bandpass(row.data(), n, fs, bpLow, bpHigh, 6,
+                (int)FilterTypes::BUTTERWORTH, 0.0);
+            std::vector<double> power;
+            std::vector<double> freqs;
+            if (!PowerSpectrum(row, fs, power, freqs)) continue;
+            const int nFreq = static_cast<int>(power.size());
+            for (int t = 0; t < 4; ++t) {
+                const double fundamental = PeakSnr(power.data(), freqs.data(), nFreq, targetHz[t], 2, 3);
+                const double harmonic = PeakSnr(power.data(), freqs.data(), nFreq, targetHz[t] * 2.0, 2, 3);
+                outSnr[t] += kChannelWeight[ch] * static_cast<float>(fundamental + 0.5 * harmonic);
+            }
+            any = true;
+        }
+        catch (const BrainFlowException&) {
+        }
+    }
+    return any;
+}
+
+float HannPeakPower(const float* const channels[4], int nSamples, int fs, float targetHz) {
+    if (!channels || nSamples < 32 || fs < 30) return 0.0f;
+    float peak = 0.0f;
+    bool any = false;
+    for (int ch = 0; ch < 4; ++ch) {
+        if (!channels[ch]) continue;
+        std::vector<double> row;
+        const int n = CopyEven(channels[ch], nSamples, row);
+        if (n < 32) continue;
+        try {
+            ApplyDisplaySpectrumFilter(row.data(), n, fs);
+            std::vector<double> power;
+            std::vector<double> freqs;
+            if (!PowerSpectrum(row, fs, power, freqs)) continue;
+            int idx = 0;
+            double best = 1e300;
+            for (int i = 0; i < static_cast<int>(freqs.size()); ++i) {
+                const double diff = std::abs(freqs[static_cast<size_t>(i)] - static_cast<double>(targetHz));
+                if (diff < best) {
+                    best = diff;
+                    idx = i;
+                }
+            }
+            peak = std::max(peak, static_cast<float>(power[static_cast<size_t>(idx)]));
+            any = true;
+        }
+        catch (const BrainFlowException&) {
+        }
+    }
+    return any ? peak : 0.0f;
+}
+
+void ApplyDisplaySpectrumFilter(double* data, int n, int fs, double lowHz, double highHz) {
+    if (!data || n < 32 || fs < 30) return;
+    const double nyquist = 0.5 * static_cast<double>(fs) - 1.0;
+    double high = highHz;
+    if (high > nyquist) high = nyquist;
+    const double low = lowHz;
+    if (!(high > low + 1.0)) return;
+    DataFilter::detrend(data, n, (int)DetrendOperations::CONSTANT);
+    DataFilter::perform_bandstop(data, n, fs, 48.0, 52.0, 4, (int)FilterTypes::BUTTERWORTH, 0.0);
+    DataFilter::perform_bandpass(data, n, fs, low, high, 4, (int)FilterTypes::BUTTERWORTH, 0.0);
 }
 
 void SSVEPDetector::SetWindowConfig(float windowSeconds, float hopSeconds) {
@@ -214,22 +413,29 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
     }
     if (nCh <= 0) return;
 
-    const double lo = std::max(1.0, static_cast<double>(snap.targetHz[0]) - 1.5);
-    double hi = static_cast<double>(snap.targetHz[3]) * 2.0 + 3.0;
-    hi = std::min(46.0, hi);
-    if (hi <= lo + 2.0) hi = lo + 2.0;
+    const float* snrChannels[4] = {};
+    for (int c = 0; c < nCh; ++c) snrChannels[used[c]] = channels[used[c]];
+    float harmonic[4] = {};
+    if (MeasureHarmonicSnr(snrChannels, nSamples, fs, snap.targetHz, harmonic)) {
+        for (int t = 0; t < 4; ++t) snap.harmonicSnr[t] = harmonic[t];
+    }
 
-    std::vector<std::vector<double>> filtered(static_cast<size_t>(nCh));
+    FbccaBand bands[8];
+    const int nBands = BuildFbccaBands(snap.targetHz, fs, bands, 8);
+
+    std::vector<std::vector<double>> wide(static_cast<size_t>(nCh));
+    double bpLow = 0.0;
+    double bpHigh = 0.0;
+    BandEdges(snap.targetHz, fs, bpLow, bpHigh);
     try {
         for (int c = 0; c < nCh; ++c) {
-            filtered[static_cast<size_t>(c)].resize(static_cast<size_t>(nSamples));
-            double* row = filtered[static_cast<size_t>(c)].data();
+            wide[static_cast<size_t>(c)].resize(static_cast<size_t>(nSamples));
+            double* row = wide[static_cast<size_t>(c)].data();
             const float* src = channels[used[c]];
             for (int i = 0; i < nSamples; ++i) row[i] = static_cast<double>(src[i]);
-
             DataFilter::detrend(row, nSamples, (int)DetrendOperations::CONSTANT);
             DataFilter::perform_bandstop(row, nSamples, fs, 48.0, 52.0, 4, (int)FilterTypes::BUTTERWORTH, 0.0);
-            DataFilter::perform_bandpass(row, nSamples, fs, lo, hi, 4, (int)FilterTypes::BUTTERWORTH, 0.0);
+            DataFilter::perform_bandpass(row, nSamples, fs, bpLow, bpHigh, 6, (int)FilterTypes::BUTTERWORTH, 0.0);
         }
     }
     catch (const BrainFlowException& err) {
@@ -237,133 +443,50 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
         return;
     }
 
-    Eigen::MatrixXd Y(nSamples, nCh);
+    float weightMax = 0.0f;
+    for (int c = 0; c < nCh; ++c) weightMax = std::max(weightMax, kChannelWeight[used[c]]);
+    Eigen::VectorXd penalty(nCh);
     for (int c = 0; c < nCh; ++c) {
-        const auto& row = filtered[static_cast<size_t>(c)];
-        for (int i = 0; i < nSamples; ++i) Y(i, c) = row[static_cast<size_t>(i)];
+        const float weight = kChannelWeight[used[c]];
+        penalty(c) = static_cast<double>(kCcaPenalty) * (static_cast<double>(weightMax) / weight - 1.0);
     }
 
-    int best = 0;
-    float bestCorr = -1.0f;
-    for (int t = 0; t < 4; ++t) {
-        const Eigen::MatrixXd X = ReferenceMatrix(snap.targetHz[t], nSamples, fs);
-        const float corr = static_cast<float>(CanonicalCorrelation(X, Y));
-        snap.corr[t] = corr;
-        if (corr > bestCorr) {
-            bestCorr = corr;
-            best = t;
+    float scores[4] = {};
+    bool scored = false;
+    for (int b = 0; b < nBands; ++b) {
+        Eigen::MatrixXd Y(nSamples, nCh);
+        try {
+            for (int c = 0; c < nCh; ++c) {
+                std::vector<double> band = wide[static_cast<size_t>(c)];
+                DataFilter::perform_bandpass(band.data(), nSamples, fs, bands[b].low, bands[b].high, 4,
+                    (int)FilterTypes::BUTTERWORTH, 0.0);
+                for (int i = 0; i < nSamples; ++i) Y(i, c) = band[static_cast<size_t>(i)];
+            }
         }
+        catch (const BrainFlowException& err) {
+            std::cerr << "[SSVEP] sub-band: " << err.what() << std::endl;
+            continue;
+        }
+        for (int t = 0; t < 4; ++t) {
+            const Eigen::MatrixXd ref = ReferenceMatrix(snap.targetHz[t], nSamples, fs);
+            const double rho = PenalizedCca(Y, ref, penalty);
+            scores[t] += static_cast<float>(bands[b].weight * rho * rho);
+        }
+        scored = true;
+    }
+    if (!scored) return;
+
+    int best = 0;
+    for (int t = 0; t < 4; ++t) {
+        snap.corr[t] = scores[t];
+        if (scores[t] > scores[best]) best = t;
     }
     snap.windowWinner = best;
     snap.votedWinner = best;
     snap.votesForWinner = 1;
     snap.votesCast = 1;
-
     snap.spectrumCount = 0;
-    std::vector<double> acc;
-    std::vector<double> freqs;
-    int nPsd = 0;
-
-    constexpr int kSnrGuard = 2;
-    constexpr int kSnrBins = 3;
-    const float channel_weights[4] = {0.15f, 0.35f, 0.35f, 0.15f};
-    float weighted_avg_powers[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float total_weight = 0.0f;
-
-    try {
-        for (int c = 0; c < nCh; ++c) {
-            int orig_ch = used[c]; // Map to original channel index 0-3
-            int psdLen = 0;
-            
-            // One Hann FFT of this window. get_psd_welch is the averaged Welch spectrum.
-            auto psd = DataFilter::get_psd(
-                filtered[static_cast<size_t>(c)].data(), nSamples, fs,
-                (int)WindowOperations::HANNING, &psdLen);
-                
-            if (psdLen <= 0 || !psd.first || !psd.second) {
-                if (psd.first) delete[] psd.first;
-                if (psd.second) delete[] psd.second;
-                continue;
-            }
-            
-            // 2. Compute SNR and Harmonic Summation for the current channel
-            float ch_weight = channel_weights[orig_ch];
-            total_weight += ch_weight;
-
-            for (int t = 0; t < 4; ++t) {
-                double target_freq = snap.targetHz[t];
-                double snr_1 = PeakSnr(psd.first, psd.second, psdLen, target_freq, kSnrGuard, kSnrBins);
-                double snr_2 = PeakSnr(psd.first, psd.second, psdLen, target_freq * 2.0, kSnrGuard, kSnrBins);
-                
-                // Harmonic Summation applied with Channel Weights
-                double h_snr = snr_1 + 0.5 * snr_2;
-                weighted_avg_powers[t] += static_cast<float>(h_snr * ch_weight);
-            }
-
-            // Existing PSD accumulation for the UI
-            if (acc.empty()) {
-                acc.assign(static_cast<size_t>(psdLen), 0.0);
-                freqs.assign(static_cast<size_t>(psdLen), 0.0);
-                for (int i = 0; i < psdLen; ++i) freqs[static_cast<size_t>(i)] = psd.second[i];
-            }
-            const int n = std::min(psdLen, static_cast<int>(acc.size()));
-            for (int i = 0; i < n; ++i) acc[static_cast<size_t>(i)] += psd.first[i];
-            ++nPsd;
-            
-            delete[] psd.first;
-            delete[] psd.second;
-        }
-    }
-    catch (const BrainFlowException& err) {
-        std::cerr << "[SSVEP] psd/snr error: " << err.what() << std::endl;
-    }
-
-    // 3. Finalize Weighted Average and Calculate the Gate Ratio
-    if (total_weight > 0.0f) {
-        float max_score = -1.0f;
-        int max_idx = -1;
-        float sum_other_scores = 0.0f;
-        
-        for (int t = 0; t < 4; ++t) {
-            weighted_avg_powers[t] /= total_weight; // Normalize by active channel weights
-            snap.harmonicSnr[t] = weighted_avg_powers[t]; // Store the SNR scores
-            
-            if (weighted_avg_powers[t] > max_score) {
-                max_score = weighted_avg_powers[t];
-                max_idx = t;
-            }
-        }
-        
-        // Extract the scores of non-target frequencies to find the noise floor
-        for (int t = 0; t < 4; ++t) {
-            if (t != max_idx) {
-                sum_other_scores += weighted_avg_powers[t];
-            }
-        }
-        
-        float mean_other_scores = sum_other_scores / 3.0f;
-        snap.gateRatio = (mean_other_scores > 0.0f) ? (max_score / mean_other_scores) : 0.0f;
-        
-        // Optional: Print to console exactly like your python script
-        // std::cout << "Max Freq: " << snap.targetHz[max_idx] << " Hz | Gate Ratio: " << snap.gateRatio << "\n";
-        
-    } else {
-        for (int t = 0; t < 4; ++t) snap.harmonicSnr[t] = 0.0f;
-        snap.gateRatio = 0.0f;
-    }
-
-    if (nPsd > 0) {
-        int count = 0;
-        for (int i = 0; i < static_cast<int>(acc.size()) && count < kSSVEPSpectrumCapacity; ++i) {
-            const float f = static_cast<float>(freqs[static_cast<size_t>(i)]);
-            if (f < 4.0f || f > 46.0f) continue;
-            snap.freq[static_cast<size_t>(count)] = f;
-            snap.power[static_cast<size_t>(count)] = static_cast<float>(acc[static_cast<size_t>(i)] / nPsd);
-            ++count;
-        }
-        snap.spectrumCount = count;
-    }
-
     snap.secondsCollected = static_cast<float>(nSamples) / static_cast<float>(fs);
-    snap.ready = snap.spectrumCount > 2 && snap.windowWinner >= 0;
+    snap.ready = true;
 }
+

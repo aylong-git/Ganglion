@@ -756,7 +756,7 @@ void HudOverlay::DrawCaption(const char* text, float cx, float cy, float maxW, f
     }
 }
 
-void HudOverlay::Render(int swapInterval) {
+void HudOverlay::Render(int swapInterval, bool holdStill) {
     if (!IsActive() || !m_prog) return;
     if (swapInterval < 1) swapInterval = 1;
 
@@ -800,9 +800,9 @@ void HudOverlay::Render(int swapInterval) {
         const bool contrast = !nullBoard && SSVEPPatternHasContrast(m_patternMode) && m_contrastMode;
         const float screenTarget = nullBoard ? 0.0f : (contrast ? (m_customHz[i] / 2.0f) : m_customHz[i]);
 
-        const bool on = nullBoard ? true : SSVEPSquareOn(timeNow, screenTarget);
+        const bool on = nullBoard || holdStill || SSVEPSquareOn(timeNow, screenTarget);
 
-        const float alpha = nullBoard
+        const float alpha = (nullBoard || holdStill)
             ? 1.0f
             : (m_smoothMode
                 ? SSVEPSineAlpha(timeNow, screenTarget)
