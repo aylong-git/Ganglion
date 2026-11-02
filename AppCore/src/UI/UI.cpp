@@ -399,6 +399,7 @@ void UIManager::Run(std::atomic<bool>& isRunning) {
         if (hudActive) {
             hudOverlay.Render(m_swapInterval, ssvepFlickerPaused.load());
         }
+        SSVEPCalibration.SetRecordSeconds(SSVEPWindowDuration);
         SSVEPCalibration.Update(glfwGetTime());
         if (SSVEPCalibration.IsActive()) {
             SSVEPCalibration.Render();
@@ -2693,6 +2694,10 @@ void DrawSSVEPScoreGraph(const SSVEPDetectSnapshot& snap) {
 }
 
 void UIManager::DrawSignalSpectrumPanel() {
+    ImGui::SetNextItemWidth(180.0f * m_dpiScale);
+    ImGui::SliderFloat("SSVEP window", &SSVEPWindowDuration, 3.0f, 7.0f, "%.1f s");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("SSVEP window duration");
+
     SSVEPDetectSnapshot snap;
     {
         std::lock_guard<std::mutex> lock(eegPlotMutex);
@@ -2951,18 +2956,19 @@ void UIManager::RenderUI() {
                 }
 
                 const char* hideAllLabel = "Hide All";
+                const char* showAllLabel = "Show All";
                 const char* previewLabel = "Preview";
                 const char* resetLabel = "Reset";
                 const float labelW = ImGui::CalcTextSize(previewLabel).x;
 
                 const float gap = 8.0f * m_dpiScale;
                 const ImVec2 hideAllSize(ImGui::CalcTextSize(hideAllLabel).x + 16.0f * m_dpiScale, toggleH);
+                const ImVec2 showAllSize(ImGui::CalcTextSize(showAllLabel).x + 16.0f * m_dpiScale, toggleH);
                 const ImVec2 resetSize(
                     ImGui::CalcTextSize(resetLabel).x + 16.0f * m_dpiScale,
                     toggleH);
-                    const float sliderW = 120.0f * m_dpiScale;
 
-                const float groupW = hideAllSize.x + gap + sliderW + gap + labelW + gap + toggleW + gap + resetSize.x;
+                const float groupW = hideAllSize.x + gap + showAllSize.x + gap + labelW + gap + toggleW + gap + resetSize.x;
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - groupW) * 0.5f));
 
                 if (ImGui::Button(hideAllLabel, hideAllSize)) {
@@ -2972,9 +2978,11 @@ void UIManager::RenderUI() {
                 }
                 ImGui::SameLine(0.0f, gap);
 
-                ImGui::SetNextItemWidth(sliderW);
-                ImGui::SliderFloat("##WindowSlider", &SSVEPWindowDuration, 1.0f, 10.0f, "%.1f s");
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("SSVEP Window & Step Duration");
+                if (ImGui::Button(showAllLabel, showAllSize)) {
+                    for (int i = 0; i < kSSVEPBoardCount; ++i) {
+                        SSVEPBoardLayout.visible[i] = true;
+                    }
+                }
                 ImGui::SameLine(0.0f, gap);
 
                 ImGui::AlignTextToFramePadding();
@@ -2986,9 +2994,10 @@ void UIManager::RenderUI() {
                     // 1. Reset Positions (triggers recalculation in DrawSSVEPPreviewBoards)
                     SSVEPBoardLayoutInit = false; 
                     
-                    // 2. Reset Box Sizes to default (0.10f)
+                    // 2. Reset Box Sizes to default (0.10f) and show every board
                     for (int i = 0; i < kSSVEPBoardCount; ++i) {
                         SSVEPBoardLayout.sizeFrac[i] = 0.10f;
+                        SSVEPBoardLayout.visible[i] = true;
                     }
                     
                     // 3. Reset Frequencies to defaults

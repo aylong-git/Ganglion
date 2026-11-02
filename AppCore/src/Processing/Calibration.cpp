@@ -40,7 +40,7 @@
 
 namespace {
 constexpr double kCountdownSec = 3.0;
-constexpr double kRecordSec = 5.0;
+constexpr double kPauseSec = 2.0;
 
 const char* kVert = R"(
 #version 330 core
@@ -202,6 +202,7 @@ void CalibrationSession::Begin(const std::vector<int>& boards, const SSVEPBoardL
     patternTex_ = patternTex;
     patternInvTex_ = patternInvTex;
     countdown_ = true;
+    pausing_ = false;
     recording_ = false;
     phaseStart_ = glfwGetTime();
     active_ = true;
@@ -217,6 +218,7 @@ void CalibrationSession::Cancel() {
     }
     active_ = false;
     countdown_ = false;
+    pausing_ = false;
     CloseWindow();
 }
 
@@ -369,6 +371,12 @@ void CalibrationSession::Advance(double nowSec) {
     phaseStart_ = nowSec;
 }
 
+void CalibrationSession::SetRecordSeconds(float sec) {
+    if (sec < 3.0f) sec = 3.0f;
+    if (sec > 7.0f) sec = 7.0f;
+    recordSec_ = sec;
+}
+
 void CalibrationSession::Update(double nowSec) {
     if (!active_) return;
     if (countdown_) {
@@ -383,9 +391,21 @@ void CalibrationSession::Update(double nowSec) {
         }
         return;
     }
-    if (nowSec - phaseStart_ >= kRecordSec) {
+    if (pausing_) {
+        if (nowSec - phaseStart_ >= kPauseSec) {
+            pausing_ = false;
+            Advance(nowSec);
+        }
+        return;
+    }
+    if (nowSec - phaseStart_ >= static_cast<double>(recordSec_)) {
         CommitCurrent();
-        Advance(nowSec);
+        if (queueIndex_ + 1 >= static_cast<int>(queue_.size())) {
+            Advance(nowSec);
+            return;
+        }
+        pausing_ = true;
+        phaseStart_ = nowSec;
     }
 }
 
@@ -668,7 +688,7 @@ void CalibrationSession::DrawBoard(float cx, float cy, float side) {
 
     float alpha = 1.0f;
     bool contrast = false;
-    if (!nullBoard) {
+    if (!nullBoard && !pausing_) {
         contrast = SSVEPPatternHasContrast(layout_.patternMode) && layout_.contrastMode;
         const double target = contrast ? (static_cast<double>(layout_.customHz[board]) / 2.0) : static_cast<double>(layout_.customHz[board]);
         const double phase = std::fmod(glfwGetTime() * target, 1.0);

@@ -570,7 +570,7 @@ void GanglionHandler::TrySSVEPDetect(const bool enabled[4]) {
     int windowN = static_cast<int>(std::lround(currentWindowSec * fs));
     if (windowN % 2) windowN--;
     windowN = std::max(32, windowN);
-    const int pauseN = std::max(1, fs);
+    const int pauseN = std::max(1, fs * 2);
     const int hopN = windowN + pauseN;
 
     bool maskChanged = false;

@@ -28,8 +28,8 @@ struct SSVEPBoardThreshold {
     float lineScale = 0.70f;
 };
 
-// One countdown, then 5 s of the selected board. Calibrate All is the same
-// session walked across every target, with a separate trial buffer each.
+// One countdown, then the SSVEP window of the selected board. Calibrate All is
+// the same session walked across every target, with a separate trial buffer each.
 class CalibrationSession {
 public:
     void Start(int board, const SSVEPBoardLayout& layout, GLFWwindow* owner, float dpi,
@@ -39,6 +39,7 @@ public:
     void Cancel();
     void Shutdown();
 
+    void SetRecordSeconds(float sec);
     void Update(double nowSec);
     void Render();
 
@@ -70,6 +71,8 @@ private:
     bool active_ = false;
     bool recording_ = false;
     bool countdown_ = true;
+    bool pausing_ = false;
+    float recordSec_ = 5.0f;
     double phaseStart_ = 0.0;
     int queueIndex_ = 0;
     std::vector<int> queue_;
