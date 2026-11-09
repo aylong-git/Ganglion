@@ -488,5 +488,6 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
     snap.spectrumCount = 0;
     snap.secondsCollected = static_cast<float>(nSamples) / static_cast<float>(fs);
     snap.ready = true;
+    snap.epoch++;
 }
 

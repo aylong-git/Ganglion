@@ -26,6 +26,56 @@ namespace {
     // for both the BLE search and the wait for the first sample.
     constexpr int kGanglionConnectTimeoutSec = 5;
 
+#if defined(_WIN32)
+    // close_ganglion closes the COM handle. If that happens before the BLED112
+    // sends a BLE disconnect, the Ganglion blue LED stays solid. Reopen the
+    // port and send BGAPI system_reset so the dongle drops the link.
+    void ResetBled112(const std::string& port)
+    {
+        if (port.empty() || port == "No Dongle Found") return;
+        std::string path = port;
+        if (path.rfind("\\\\.\\", 0) != 0) path = "\\\\.\\" + port;
+
+        HANDLE handle = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+            OPEN_EXISTING, 0, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) {
+            std::cerr << "[BrainFlow] Could not reopen " << port << " to drop the BLE link.\n";
+            return;
+        }
+
+        DCB dcb{};
+        dcb.DCBlength = sizeof(dcb);
+        if (!GetCommState(handle, &dcb)) {
+            CloseHandle(handle);
+            return;
+        }
+        dcb.BaudRate = 256000;
+        dcb.ByteSize = 8;
+        dcb.Parity = NOPARITY;
+        dcb.StopBits = ONESTOPBIT;
+        dcb.fBinary = TRUE;
+        dcb.fDtrControl = DTR_CONTROL_ENABLE;
+        dcb.fRtsControl = RTS_CONTROL_ENABLE;
+        if (!SetCommState(handle, &dcb)) {
+            CloseHandle(handle);
+            return;
+        }
+
+        COMMTIMEOUTS timeouts{};
+        timeouts.WriteTotalTimeoutConstant = 500;
+        timeouts.ReadIntervalTimeout = 50;
+        timeouts.ReadTotalTimeoutConstant = 200;
+        SetCommTimeouts(handle, &timeouts);
+
+        const unsigned char reset[5] = { 0x00, 0x01, 0x00, 0x00, 0x00 };
+        DWORD wrote = 0;
+        WriteFile(handle, reset, sizeof(reset), &wrote, nullptr);
+        FlushFileBuffers(handle);
+        Sleep(1000);
+        CloseHandle(handle);
+    }
+#endif
+
     BrainFlowInputParams MakeGanglionParams(const std::string& port, const std::string& mac) {
         BrainFlowInputParams params;
         params.timeout = kGanglionConnectTimeoutSec;
@@ -255,6 +305,7 @@ GanglionHandler::~GanglionHandler() {
 bool GanglionHandler::Connect(const std::string& port, const std::string& macAddress) {
     if (connected) return true;
     lastConnectError.clear();
+    serialPort = port;
 
     // A failed attempt can leave GanglionLib holding the COM port. Drop it
     // before opening again, or the replugged dongle is still busy.
@@ -304,30 +355,20 @@ bool GanglionHandler::Connect(const std::string& port, const std::string& macAdd
 }
 
 void GanglionHandler::Disconnect() {
+    const bool hadSession = board != nullptr || connected.load() || impedanceMode.load();
+    if (!hadSession) return;
+
+    const std::string port = serialPort;
     if (board != nullptr) {
-        // stop_stream throws when the read thread has already exited. That used
-        // to skip release_session. BoardShim's destructor does not release
-        // either, so the native Ganglion session, the open COM port, and
-        // GanglionLib's process-lifetime state stayed alive. The next connect
-        // could not replace that session; only exiting the app could.
+        // release_session stops the stream and then calls close_ganglion.
+        // A separate stop_stream first joins the reader and sends "s", and
+        // close_ganglion then closes the COM port before the BLED112 transmits
+        // the BLE disconnect. The Ganglion LED stays solid.
         try {
-            if (board->is_prepared()) {
-                try {
-                    board->stop_stream();
-                }
-                catch (const BrainFlowException& err) {
-                    std::cerr << "[BrainFlow] stop_stream: " << err.what() << "\n";
-                }
-                try {
-                    board->release_session();
-                }
-                catch (const BrainFlowException& err) {
-                    std::cerr << "[BrainFlow] release_session: " << err.what() << "\n";
-                }
-            }
+            board->release_session();
         }
         catch (const BrainFlowException& err) {
-            std::cerr << "[BrainFlow] is_prepared: " << err.what() << "\n";
+            std::cerr << "[BrainFlow] release_session: " << err.what() << "\n";
         }
         catch (...) {}
         delete board;
@@ -341,6 +382,10 @@ void GanglionHandler::Disconnect() {
         std::cerr << "[BrainFlow] release_all_sessions: " << err.what() << "\n";
     }
     catch (...) {}
+
+#if defined(_WIN32)
+    ResetBled112(port);
+#endif
 
     {
         std::lock_guard<std::mutex> lock(dataMutex);
@@ -653,6 +698,7 @@ void GanglionHandler::TrySSVEPDetect(const bool enabled[4]) {
 
 bool GanglionHandler::StartImpedanceMode(const std::string& port, const std::string& macAddress) {
     lastConnectError.clear();
+    serialPort = port;
     if (board != nullptr) {
         Disconnect();
     }
@@ -689,17 +735,16 @@ bool GanglionHandler::StartImpedanceMode(const std::string& port, const std::str
 void GanglionHandler::StopImpedanceMode() {
     if (board == nullptr || !impedanceMode) return;
 
+    // "Z" only leaves impedance mode. It does not drop BLE. Disconnect()
+    // releases the session and resets the dongle so the blue LED blinks.
     try {
         board->config_board("Z");
-        board->stop_stream();
-        board->release_session();
-
-        std::lock_guard<std::mutex> lock(dataMutex);
-        impedanceMode = false;
     }
     catch (const BrainFlowException& err) {
-        std::cerr << "[BrainFlow] Failed to stop impedance check: " << err.what() << std::endl;
+        std::cerr << "[BrainFlow] Failed to leave impedance mode: " << err.what() << std::endl;
     }
+    catch (...) {}
+    Disconnect();
 }
 
 bool GanglionHandler::IsImpedanceMode() const {

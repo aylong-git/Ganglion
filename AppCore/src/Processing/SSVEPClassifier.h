@@ -34,6 +34,8 @@ struct SSVEPDetectSnapshot {
     float appliedSnr[4] = {};
     bool snrGate[4] = {};
     float gateRatio = 0.0f;
+    // Increments once each time a detection window finishes.
+    std::uint32_t epoch = 0;
 };
 
 // Hann SNR at each target: channel weight * (SNR(f) + 0.5 * SNR(2f)).

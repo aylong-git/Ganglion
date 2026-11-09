@@ -6,10 +6,15 @@ struct GLFWwindow;
 
 // Top-left of each flicker square, as a fraction of the SSVEP panel
 // (and of the HUD monitor).
+inline constexpr float kSSVEPDefaultSizeFrac = 0.15f;
+
 struct SSVEPBoardLayout {
     float nx[kSSVEPBoardCount] = {};
     float ny[kSSVEPBoardCount] = {};
-    float sizeFrac[kSSVEPBoardCount] = { 0.10f, 0.10f, 0.10f, 0.10f, 0.10f };
+    float sizeFrac[kSSVEPBoardCount] = {
+        kSSVEPDefaultSizeFrac, kSSVEPDefaultSizeFrac, kSSVEPDefaultSizeFrac,
+        kSSVEPDefaultSizeFrac, kSSVEPDefaultSizeFrac
+    };
     bool visible[kSSVEPBoardCount] = { true, true, true, true, true };
     float customHz[kSSVEPFlickerBoardCount] = {
         kSSVEPTargetHz[0],

@@ -36,6 +36,8 @@ public:
         unsigned patternTex, unsigned patternInvTex);
     void StartAll(const SSVEPBoardLayout& layout, GLFWwindow* owner, float dpi,
         unsigned patternTex, unsigned patternInvTex);
+    void StartQueue(const std::vector<int>& boards, const SSVEPBoardLayout& layout, GLFWwindow* owner, float dpi,
+        unsigned patternTex, unsigned patternInvTex);
     void Cancel();
     void Shutdown();
 

@@ -275,7 +275,14 @@ bool HudOverlay::Enter(GLFWwindow* shareContext, const SSVEPBoardLayout& layout)
         m_boards[i] = glfwCreateWindow(m_patch[i], m_winH[i], "", nullptr, shareContext);
         if (!m_boards[i]) {
             std::cerr << "[HUD] Failed to create flicker board " << i << "\n";
+            glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
+            glfwWindowHint(GLFW_FLOATING, GLFW_FALSE);
+            glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_TRUE);
+            glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
             glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+#ifdef GLFW_MOUSE_PASSTHROUGH
+            glfwWindowHint(GLFW_MOUSE_PASSTHROUGH, GLFW_FALSE);
+#endif
             Leave();
             return false;
         }
@@ -298,7 +305,16 @@ bool HudOverlay::Enter(GLFWwindow* shareContext, const SSVEPBoardLayout& layout)
         }
     }
 
+    glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
+    glfwWindowHint(GLFW_FLOATING, GLFW_FALSE);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_TRUE);
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
+    glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_TRUE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+#ifdef GLFW_MOUSE_PASSTHROUGH
+    glfwWindowHint(GLFW_MOUSE_PASSTHROUGH, GLFW_FALSE);
+#endif
 
     if (!InitGl()) {
         Leave();
@@ -309,7 +325,7 @@ bool HudOverlay::Enter(GLFWwindow* shareContext, const SSVEPBoardLayout& layout)
     m_contrastMode = layout.contrastMode;
     m_smoothMode = layout.smoothMode;
     for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) {
-        m_customHz[i] = layout.customHz[i];
+        m_customHz[i] = std::clamp(layout.customHz[i], 5.0f, 40.0f);
     }
 
     m_frame = 0;
@@ -360,7 +376,7 @@ void HudOverlay::Sync(const SSVEPBoardLayout& layout) {
         if (!m_boards[i]) continue;
 
         if (!SSVEPBoardIsNull(i)) {
-            m_customHz[i] = layout.customHz[i];
+            m_customHz[i] = std::clamp(layout.customHz[i], 5.0f, 40.0f);
         }
 
         int patch = 0;

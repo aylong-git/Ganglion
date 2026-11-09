@@ -102,7 +102,6 @@ int main() {
                     uiManager.isConnected = false;
                     uiManager.isCheckingImpedance = false;
                     uiManager.showPortErrorPopup = true;
-                    ganglionBoard.Disconnect();
                 }
             }
 
@@ -155,7 +154,8 @@ int main() {
                     bool contrast = SSVEPPatternHasContrast(uiManager.SSVEPBoardLayout.patternMode)
                         && uiManager.SSVEPBoardLayout.contrastMode;
                     // The physical screen flicker target
-                    float screenTarget = contrast ? (uiManager.SSVEPBoardLayout.customHz[i] / 2.0f) : uiManager.SSVEPBoardLayout.customHz[i];
+                    const float boardHz = std::clamp(uiManager.SSVEPBoardLayout.customHz[i], 5.0f, 40.0f);
+                    float screenTarget = contrast ? (boardHz / 2.0f) : boardHz;
                     
                     // Exact physical monitor frames per cycle
                     int periodFrames = std::max(2, static_cast<int>(std::lround(static_cast<double>(refresh) / screenTarget)));

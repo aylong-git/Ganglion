@@ -13,6 +13,10 @@
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#if defined(_WIN32)
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 
 #include "stb_image.h"
 
@@ -184,6 +188,12 @@ void CalibrationSession::StartAll(const SSVEPBoardLayout& layout, GLFWwindow* ow
     order.push_back(kSSVEPNullBoard);
     for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) order.push_back(flicker[i]);
     Begin(order, layout, owner, dpi, patternTex, patternInvTex);
+}
+
+void CalibrationSession::StartQueue(const std::vector<int>& boards, const SSVEPBoardLayout& layout,
+    GLFWwindow* owner, float dpi, unsigned patternTex, unsigned patternInvTex) {
+    if (boards.empty()) return;
+    Begin(boards, layout, owner, dpi, patternTex, patternInvTex);
 }
 
 void CalibrationSession::Begin(const std::vector<int>& boards, const SSVEPBoardLayout& layout,
@@ -420,6 +430,9 @@ void CalibrationSession::OpenWindow() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
+#ifdef GLFW_MOUSE_PASSTHROUGH
+    glfwWindowHint(GLFW_MOUSE_PASSTHROUGH, GLFW_FALSE);
+#endif
 
     const int monitorW = MonitorWidthOf(owner_);
     int artW[5] = {};
@@ -476,6 +489,18 @@ void CalibrationSession::OpenWindow() {
     const int mh = mode ? mode->height : winH;
     glfwSetWindowPos(window_, mx + (mw - winW) / 2, my + (mh - winH) / 2);
     glfwSetWindowAttrib(window_, GLFW_FLOATING, GLFW_TRUE);
+#ifdef GLFW_MOUSE_PASSTHROUGH
+    glfwSetWindowAttrib(window_, GLFW_MOUSE_PASSTHROUGH, GLFW_FALSE);
+#endif
+#if defined(_WIN32)
+    if (HWND hwnd = glfwGetWin32Window(window_)) {
+        LONG_PTR ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        ex &= ~static_cast<LONG_PTR>(WS_EX_TRANSPARENT);
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, ex);
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+#endif
 
     GLFWwindow* previous = glfwGetCurrentContext();
     glfwMakeContextCurrent(window_);
@@ -664,8 +689,11 @@ void CalibrationSession::DrawBoard(float cx, float cy, float side) {
         int fbW = 0, fbH = 0;
         glfwGetFramebufferSize(window_, &fbW, &fbH);
         if (fbW <= 0 || fbH <= 0) return;
-        auto X = [&](float x) { return x / static_cast<float>(fbW) * 2.0f - 1.0f; };
-        auto Y = [&](float y) { return 1.0f - y / static_cast<float>(fbH) * 2.0f; };
+        int boxW = 0, boxH = 0;
+        glfwGetWindowSize(window_, &boxW, &boxH);
+        if (boxW <= 0 || boxH <= 0) return;
+        auto X = [&](float x) { return x / static_cast<float>(boxW) * 2.0f - 1.0f; };
+        auto Y = [&](float y) { return 1.0f - y / static_cast<float>(boxH) * 2.0f; };
         const float v[] = {
             X(ax), Y(ay), 0.0f, 0.0f,
             X(ax), Y(by), 0.0f, 1.0f,
@@ -809,11 +837,11 @@ void CalibrationSession::DrawLabel(const char* text, float cx, float cy, float m
     const float originX = cx - 0.5f * x * scale;
     const float originY = cy - 0.5f * (y0 + y1) * scale;
 
-    int fbW = 0, fbH = 0;
-    glfwGetFramebufferSize(window_, &fbW, &fbH);
-    if (fbW <= 0 || fbH <= 0) return;
-    auto X = [&](float px) { return px / static_cast<float>(fbW) * 2.0f - 1.0f; };
-    auto Y = [&](float py) { return 1.0f - py / static_cast<float>(fbH) * 2.0f; };
+    int boxW = 0, boxH = 0;
+    glfwGetWindowSize(window_, &boxW, &boxH);
+    if (boxW <= 0 || boxH <= 0) return;
+    auto X = [&](float px) { return px / static_cast<float>(boxW) * 2.0f - 1.0f; };
+    auto Y = [&](float py) { return 1.0f - py / static_cast<float>(boxH) * 2.0f; };
 
     glUseProgram(program_);
     glBindVertexArray(vao_);
@@ -851,11 +879,9 @@ void CalibrationSession::DrawCancel(int winW, int winH) {
     const float bh = 40.0f * dpi_;
     const float x0 = (static_cast<float>(winW) - bw) * 0.5f;
     const float y0 = static_cast<float>(winH) - bh - 28.0f * dpi_;
-    int fbW = 0, fbH = 0;
-    glfwGetFramebufferSize(window_, &fbW, &fbH);
-    if (fbW <= 0 || fbH <= 0) return;
-    auto X = [&](float x) { return x / static_cast<float>(fbW) * 2.0f - 1.0f; };
-    auto Y = [&](float y) { return 1.0f - y / static_cast<float>(fbH) * 2.0f; };
+    if (winW <= 0 || winH <= 0) return;
+    auto X = [&](float x) { return x / static_cast<float>(winW) * 2.0f - 1.0f; };
+    auto Y = [&](float y) { return 1.0f - y / static_cast<float>(winH) * 2.0f; };
     const float v[] = {
         X(x0), Y(y0), 0, 0,
         X(x0), Y(y0 + bh), 0, 1,
@@ -915,20 +941,45 @@ bool CalibrationSession::CancelHit(double mx, double my, int winW, int winH) con
 
 void CalibrationSession::Render() {
     if (!active_ || !window_) return;
-    const bool click = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+#if defined(_WIN32)
+    if (HWND hwnd = glfwGetWin32Window(window_)) {
+        LONG_PTR ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        if (ex & WS_EX_TRANSPARENT) {
+            ex &= ~static_cast<LONG_PTR>(WS_EX_TRANSPARENT);
+            SetWindowLongPtr(hwnd, GWL_EXSTYLE, ex);
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+        else {
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+#endif
     const bool esc = glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS
         || (owner_ && glfwGetKey(owner_, GLFW_KEY_ESCAPE) == GLFW_PRESS);
     int ww = 0, wh = 0;
     glfwGetWindowSize(window_, &ww, &wh);
+    bool down = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     double mx = 0, my = 0;
     glfwGetCursorPos(window_, &mx, &my);
-    if ((click && !mouseDown_ && CancelHit(mx, my, ww, wh)) || (esc && !escapeDown_)) {
-        mouseDown_ = click;
+#if defined(_WIN32)
+    if (HWND hwnd = glfwGetWin32Window(window_)) {
+        POINT cursor;
+        if (GetCursorPos(&cursor) && ScreenToClient(hwnd, &cursor)) {
+            mx = cursor.x;
+            my = cursor.y;
+        }
+        if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) down = true;
+    }
+#endif
+    if ((down && !mouseDown_ && CancelHit(mx, my, ww, wh)) || (esc && !escapeDown_)) {
+        mouseDown_ = down;
         escapeDown_ = esc;
         Cancel();
         return;
     }
-    mouseDown_ = click;
+    mouseDown_ = down;
     escapeDown_ = esc;
 
     GLFWwindow* previous = glfwGetCurrentContext();
@@ -959,8 +1010,8 @@ void CalibrationSession::Render() {
                 : ((180.0f * dpi_) / std::max(1.0f, y1 - y0));
             const float ox = static_cast<float>(ww) * 0.5f - x * scale * 0.5f;
             const float oy = static_cast<float>(wh) * 0.42f - (y0 + y1) * 0.5f * scale;
-            auto X = [&](float px) { return px / static_cast<float>(fbW) * 2.0f - 1.0f; };
-            auto Y = [&](float py) { return 1.0f - py / static_cast<float>(fbH) * 2.0f; };
+            auto X = [&](float px) { return px / static_cast<float>(ww) * 2.0f - 1.0f; };
+            auto Y = [&](float py) { return 1.0f - py / static_cast<float>(wh) * 2.0f; };
             glUseProgram(program_);
             glBindVertexArray(vao_);
             glBindTexture(GL_TEXTURE_2D, sharpDigits ? digitTex_ : fontTex_);

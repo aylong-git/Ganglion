@@ -79,6 +79,8 @@ public:
     char recordDirectory[512] = "";
     bool showCalibSavePanel = false;
     bool calibSaveAll = false;
+    bool calibSaveSelection = false;
+    bool calibSaveMask[kSSVEPBoardCount] = {};
     int calibSaveBoard = -1;
     char calibSaveFileName[256] = "";
     bool showCalibSaveError = false;
@@ -86,6 +88,7 @@ public:
     std::atomic<bool> isFolderDialogWaiting{ false };
     std::string GetFullRecordPath() const;
     void OpenCalibrationSave(int board);
+    void OpenCalibrationSaveMask(const bool mask[kSSVEPBoardCount]);
 
     // Impedance Tab
     bool isCheckingImpedance = false;

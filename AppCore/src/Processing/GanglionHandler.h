@@ -15,7 +15,7 @@ class EEGRecorder;
 class CalibrationSession;
 
 static constexpr int kEEGPlotDisplayCapacity = 1000; // ~5 s at 200 Hz shown in Signal
-static constexpr int kEEGLiveSpectrumCapacity = 10 * 200; // filter settle time plus the 5 s Hann window
+static constexpr int kEEGLiveSpectrumCapacity = 10 * 200; // filter settle time plus the latest 5 s Hann window
 // Order-6 Butterworth startup lasts about (order / low_cutoff) seconds.
 // The plot edge can fall to 0.5 Hz, which needs ~12 s. The visible window
 // still shows the latest ~5 s after that prefix is dropped.
@@ -96,6 +96,7 @@ private:
     double plotBandHighHz = SSVEPPlotBandHighHz(kSSVEPTargetHz);
     float currentWindowSec = static_cast<float>(kSSVEPWindowSec);
     std::string lastConnectError;
+    std::string serialPort;
 
     std::array<EEGRing, 4> eegRings{};
     double sessionStartTs = -1.0;
