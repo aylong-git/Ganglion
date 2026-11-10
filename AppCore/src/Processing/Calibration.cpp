@@ -315,6 +315,11 @@ void CalibrationSession::ResetSnrThreshold(int board) {
     threshold_[board].appliedSnr = threshold_[board].autoSnr;
 }
 
+void CalibrationSession::CopyChannelWeights(float out[4]) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (int ch = 0; ch < 4; ++ch) out[ch] = channelWeight_[ch];
+}
+
 bool CalibrationSession::CopySnrThreshold(int board, SSVEPBoardThreshold& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (board < 0 || board >= kSSVEPFlickerBoardCount || !threshold_[board].valid) {
@@ -331,7 +336,8 @@ void CalibrationSession::CommitCurrent() {
     std::vector<std::array<float, 4>> samples;
     int rate = 200;
     float hz[4] = {};
-    bool score = false;
+    bool scoreFlicker = false;
+    bool scoreNull = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stored_[board].samples = std::move(scratchSamples_);
@@ -339,27 +345,69 @@ void CalibrationSession::CommitCurrent() {
         stored_[board].samplingRate = scratchRate_ > 0 ? scratchRate_ : 200;
         stored_[board].complete = true;
         recording_ = false;
-        if (!SSVEPBoardIsNull(board)) {
-            samples = stored_[board].samples;
-            rate = stored_[board].samplingRate;
-            for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) hz[i] = layout_.customHz[i];
-            score = true;
-        }
+        samples = stored_[board].samples;
+        rate = stored_[board].samplingRate;
+        for (int i = 0; i < kSSVEPFlickerBoardCount; ++i) hz[i] = layout_.customHz[i];
+        scoreNull = SSVEPBoardIsNull(board);
+        scoreFlicker = !scoreNull;
     }
-    if (!score) return;
+
+    auto columnsFrom = [](const std::vector<std::array<float, 4>>& src, int n,
+        std::vector<float> column[4], const float* ptrs[4]) {
+        for (int ch = 0; ch < 4; ++ch) {
+            column[ch].resize(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i) column[ch][static_cast<size_t>(i)] = src[static_cast<size_t>(i)][ch];
+            ptrs[ch] = column[ch].data();
+        }
+    };
+
+    if (scoreNull) {
+        int n = static_cast<int>(samples.size());
+        if (n % 2) --n;
+        if (n >= 32) {
+            std::vector<float> column[4];
+            const float* ptrs[4] = {};
+            columnsFrom(samples, n, column, ptrs);
+            float weight[4] = {};
+            if (ChannelWeightsFromNull(ptrs, n, rate, hz, weight)) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    for (int ch = 0; ch < 4; ++ch) channelWeight_[ch] = weight[ch];
+                    channelWeightFromNull_ = true;
+                }
+                std::cout << "[SSVEP] Null channel weights "
+                    << weight[0] << " " << weight[1] << " " << weight[2] << " " << weight[3] << "\n";
+                for (int flicker = 0; flicker < kSSVEPFlickerBoardCount; ++flicker) {
+                    SSVEPCalibrationTrial trial;
+                    CopyTrial(flicker, trial);
+                    if (!trial.complete) continue;
+                    int fn = static_cast<int>(trial.samples.size());
+                    if (fn % 2) --fn;
+                    if (fn < 32) continue;
+                    std::vector<float> flickerCol[4];
+                    const float* flickerPtr[4] = {};
+                    columnsFrom(trial.samples, fn, flickerCol, flickerPtr);
+                    float snr[4] = {};
+                    if (!MeasureHarmonicSnr(flickerPtr, fn, trial.samplingRate, hz, snr, weight)) continue;
+                    const float peak = HannPeakPower(flickerPtr, fn, trial.samplingRate, hz[flicker]);
+                    NoteCalibrationSnr(flicker, snr[flicker], peak);
+                }
+            }
+        }
+        return;
+    }
+    if (!scoreFlicker) return;
 
     int n = static_cast<int>(samples.size());
     if (n % 2) --n;
     if (n < 32) return;
     std::vector<float> column[4];
     const float* ptrs[4] = {};
-    for (int ch = 0; ch < 4; ++ch) {
-        column[ch].resize(static_cast<size_t>(n));
-        for (int i = 0; i < n; ++i) column[ch][static_cast<size_t>(i)] = samples[static_cast<size_t>(i)][ch];
-        ptrs[ch] = column[ch].data();
-    }
+    columnsFrom(samples, n, column, ptrs);
+    float weight[4] = {};
+    CopyChannelWeights(weight);
     float snr[4] = {};
-    if (!MeasureHarmonicSnr(ptrs, n, rate, hz, snr)) return;
+    if (!MeasureHarmonicSnr(ptrs, n, rate, hz, snr, weight)) return;
     const float peak = HannPeakPower(ptrs, n, rate, hz[board]);
     NoteCalibrationSnr(board, snr[board], peak);
 }

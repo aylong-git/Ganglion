@@ -302,6 +302,42 @@ GanglionHandler::~GanglionHandler() {
     Disconnect();
 }
 
+// Firmware 2 scale times the 24-bit code -2^23. A live electrode does not sit
+// on this exact value with no noise; it is the MCP3912 reset code, repeated
+// because the ADC never left reset. The plot bandpass then turns that
+// constant into 0 uV after a short startup ring.
+bool GanglionStreamStuckAtRail(BoardShim* board, int boardId) {
+    if (board == nullptr) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    BrainFlowArray<double, 2> data = board->get_board_data();
+    const int n = data.get_size(1);
+    if (n < 40) return false;
+
+    std::vector<int> eeg;
+    try {
+        eeg = BoardShim::get_eeg_channels(boardId);
+    }
+    catch (...) {
+        return false;
+    }
+    if (static_cast<int>(eeg.size()) < 4) return false;
+
+    for (int ch = 0; ch < 4; ++ch) {
+        const int row = eeg[static_cast<size_t>(ch)];
+        if (row < 0 || row >= data.get_size(0)) return false;
+        const double* col = data.get_address(row);
+        double lo = col[0];
+        double hi = col[0];
+        for (int i = 1; i < n; ++i) {
+            lo = std::min(lo, col[i]);
+            hi = std::max(hi, col[i]);
+        }
+        if (hi - lo > 1.0) return false;
+        if (std::fabs(0.5 * (lo + hi) + 15686.3) > 5.0) return false;
+    }
+    return true;
+}
+
 bool GanglionHandler::Connect(const std::string& port, const std::string& macAddress) {
     if (connected) return true;
     lastConnectError.clear();
@@ -337,6 +373,34 @@ bool GanglionHandler::Connect(const std::string& port, const std::string& macAdd
         board->start_stream(450000, "");
         std::this_thread::sleep_for(std::chrono::seconds(2));
         board->get_board_data();
+        if (GanglionStreamStuckAtRail(board, boardId)) {
+            // 'v' reinitializes the MCP3912. BrainFlow stops the stream, sends
+            // the command, then starts 'b' again.
+            std::cerr << "[BrainFlow] EEG is stuck at the full-scale code -15686 uV. Resetting the ADC.\n";
+            try {
+                board->config_board("v");
+            }
+            catch (const BrainFlowException& err) {
+                std::cerr << "[BrainFlow] Peripheral reset failed: " << err.what() << "\n";
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            bool stillStuck = true;
+            try {
+                board->get_board_data();
+                stillStuck = GanglionStreamStuckAtRail(board, boardId);
+            }
+            catch (const BrainFlowException& err) {
+                std::cerr << "[BrainFlow] Stream did not resume after reset: " << err.what() << "\n";
+                stillStuck = true;
+            }
+            if (stillStuck) {
+                lastConnectError = "Ganglion ADC is stuck at full scale. Switch the board off, wait a few seconds, switch it on, then connect again.";
+                std::cerr << "[BrainFlow] " << lastConnectError << "\n";
+                Disconnect();
+                return false;
+            }
+            std::cout << "[BrainFlow] ADC reset recovered the EEG stream.\n";
+        }
         {
             std::lock_guard<std::mutex> lock(dataMutex);
             ClearEEGRingsLocked();
@@ -685,6 +749,9 @@ void GanglionHandler::TrySSVEPDetect(const bool enabled[4]) {
         }
     }
 
+    float channelWeight[4] = { 0.20f, 0.30f, 0.30f, 0.20f };
+    if (calibrationSession) calibrationSession->CopyChannelWeights(channelWeight);
+    ssvepDetector.SetChannelWeights(channelWeight);
     ssvepDetector.Analyze(ptrs, enabled, windowN, fs);
     lastDetectSample = sampleIndex;
     if (ssvepDetector.Snapshot().ready) PlayDetectionChime();

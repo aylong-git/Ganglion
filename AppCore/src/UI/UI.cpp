@@ -703,7 +703,9 @@ void EnsureCalibrationLine(CalibrationSession& session, int board, const SSVEPCa
             ptrs[ch] = column[ch].data();
         }
         float scores[4] = {};
-        if (MeasureHarmonicSnr(ptrs, n, trial.samplingRate, targetHz, scores)) snr = scores[board];
+        float weight[4] = {};
+        session.CopyChannelWeights(weight);
+        if (MeasureHarmonicSnr(ptrs, n, trial.samplingRate, targetHz, scores, weight)) snr = scores[board];
     }
     session.NoteCalibrationSnr(board, snr, peak);
 }

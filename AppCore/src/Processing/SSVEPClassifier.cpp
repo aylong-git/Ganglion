@@ -121,7 +121,6 @@ Eigen::MatrixXd ReferenceMatrix(double freqHz, int nSamples, int fs) {
     return X;
 }
 
-constexpr float kChannelWeight[4] = { 0.20f, 0.30f, 0.30f, 0.20f };
 constexpr float kCcaPenalty = 0.20f;
 constexpr float kFbccaA = 1.25f;
 constexpr float kFbccaB = 0.25f;
@@ -240,9 +239,10 @@ bool PowerSpectrum(std::vector<double>& row, int fs, std::vector<double>& power,
 }
 
 bool MeasureHarmonicSnr(const float* const channels[4], int nSamples, int fs,
-    const float targetHz[4], float outSnr[4]) {
+    const float targetHz[4], float outSnr[4], const float channelWeight[4]) {
     for (int t = 0; t < 4; ++t) outSnr[t] = 0.0f;
     if (!channels || !targetHz || nSamples < 32 || fs < 30) return false;
+    const float* weight = channelWeight ? channelWeight : kChannelWeightPrior;
 
     double bpLow = 0.0;
     double bpHigh = 0.0;
@@ -250,7 +250,7 @@ bool MeasureHarmonicSnr(const float* const channels[4], int nSamples, int fs,
 
     bool any = false;
     for (int ch = 0; ch < 4; ++ch) {
-        if (!channels[ch]) continue;
+        if (!channels[ch] || !(weight[ch] > 0.0f)) continue;
         std::vector<double> row;
         const int n = CopyEven(channels[ch], nSamples, row);
         if (n < 32) continue;
@@ -267,7 +267,7 @@ bool MeasureHarmonicSnr(const float* const channels[4], int nSamples, int fs,
             for (int t = 0; t < 4; ++t) {
                 const double fundamental = PeakSnr(power.data(), freqs.data(), nFreq, targetHz[t], 2, 3);
                 const double harmonic = PeakSnr(power.data(), freqs.data(), nFreq, targetHz[t] * 2.0, 2, 3);
-                outSnr[t] += kChannelWeight[ch] * static_cast<float>(fundamental + 0.5 * harmonic);
+                outSnr[t] += weight[ch] * static_cast<float>(fundamental + 0.5 * harmonic);
             }
             any = true;
         }
@@ -275,6 +275,123 @@ bool MeasureHarmonicSnr(const float* const channels[4], int nSamples, int fs,
         }
     }
     return any;
+}
+
+bool ChannelWeightsFromNull(const float* const channels[4], int nSamples, int fs,
+    const float targetHz[4], float outWeight[4]) {
+    for (int ch = 0; ch < 4; ++ch) outWeight[ch] = kChannelWeightPrior[ch];
+    if (!channels || !targetHz || nSamples < 32 || fs < 30) return false;
+
+    double bpLow = 0.0;
+    double bpHigh = 0.0;
+    BandEdges(targetHz, fs, bpLow, bpHigh);
+
+    double dirt[4] = {};
+    bool usable[4] = {};
+    int nUsed = 0;
+    for (int ch = 0; ch < 4; ++ch) {
+        if (!channels[ch]) continue;
+        std::vector<double> row;
+        const int n = CopyEven(channels[ch], nSamples, row);
+        if (n < 32) continue;
+
+        double mean = 0.0;
+        int rail = 0;
+        for (int i = 0; i < n; ++i) {
+            mean += row[static_cast<size_t>(i)];
+            if (std::fabs(row[static_cast<size_t>(i)] + 15686.3) < 5.0) ++rail;
+        }
+        mean /= static_cast<double>(n);
+        double var = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const double d = row[static_cast<size_t>(i)] - mean;
+            var += d * d;
+        }
+        var /= static_cast<double>(n);
+        if (var < 0.05 * 0.05 || rail > n / 2) continue;
+
+        try {
+            DataFilter::detrend(row.data(), n, (int)DetrendOperations::CONSTANT);
+            DataFilter::perform_bandstop(row.data(), n, fs, 48.0, 52.0, 4,
+                (int)FilterTypes::BUTTERWORTH, 0.0);
+            DataFilter::perform_bandpass(row.data(), n, fs, bpLow, bpHigh, 6,
+                (int)FilterTypes::BUTTERWORTH, 0.0);
+            std::vector<double> power;
+            std::vector<double> freqs;
+            if (!PowerSpectrum(row, fs, power, freqs)) continue;
+            std::vector<double> band;
+            band.reserve(power.size());
+            for (size_t i = 0; i < power.size(); ++i) {
+                if (freqs[i] < bpLow || freqs[i] > bpHigh) continue;
+                const double p = power[i];
+                if (std::isfinite(p) && p >= 0.0) band.push_back(p);
+            }
+            if (band.size() < 4) continue;
+            std::sort(band.begin(), band.end());
+            const double med = band[band.size() / 2];
+            if (!(med > 0.0) || !std::isfinite(med)) continue;
+            double mx = band.back();
+            double noise = med;
+            if (mx > med * 8.0) noise = mx / 8.0;
+            dirt[ch] = noise;
+            usable[ch] = true;
+            ++nUsed;
+        }
+        catch (const BrainFlowException&) {
+        }
+    }
+    if (nUsed == 0) return false;
+
+    double raw[4] = {};
+    double sum = 0.0;
+    for (int ch = 0; ch < 4; ++ch) {
+        if (!usable[ch]) continue;
+        raw[ch] = static_cast<double>(kChannelWeightPrior[ch]) / dirt[ch];
+        sum += raw[ch];
+    }
+    if (!(sum > 0.0)) return false;
+
+    bool frozen[4] = {};
+    double w[4] = {};
+    for (int ch = 0; ch < 4; ++ch) {
+        if (usable[ch]) w[ch] = raw[ch] / sum;
+    }
+    for (int iter = 0; iter < 4; ++iter) {
+        double freeSum = 0.0;
+        double held = 0.0;
+        int freeN = 0;
+        for (int ch = 0; ch < 4; ++ch) {
+            if (!usable[ch]) continue;
+            if (frozen[ch]) held += w[ch];
+            else {
+                freeSum += w[ch];
+                ++freeN;
+            }
+        }
+        if (freeN == 0) break;
+        const double room = std::max(0.0, 1.0 - held);
+        bool hit = false;
+        for (int ch = 0; ch < 4; ++ch) {
+            if (!usable[ch] || frozen[ch]) continue;
+            w[ch] = (freeSum > 0.0) ? (w[ch] / freeSum * room) : 0.0;
+            if (w[ch] > 0.60) {
+                w[ch] = 0.60;
+                frozen[ch] = true;
+                hit = true;
+            }
+            else if (w[ch] < 0.05) {
+                w[ch] = 0.05;
+                frozen[ch] = true;
+                hit = true;
+            }
+        }
+        if (!hit) break;
+    }
+    double norm = 0.0;
+    for (int ch = 0; ch < 4; ++ch) norm += w[ch];
+    if (!(norm > 0.0)) return false;
+    for (int ch = 0; ch < 4; ++ch) outWeight[ch] = static_cast<float>(w[ch] / norm);
+    return true;
 }
 
 float HannPeakPower(const float* const channels[4], int nSamples, int fs, float targetHz) {
@@ -319,6 +436,13 @@ void ApplyDisplaySpectrumFilter(double* data, int n, int fs, double lowHz, doubl
     DataFilter::detrend(data, n, (int)DetrendOperations::CONSTANT);
     DataFilter::perform_bandstop(data, n, fs, 48.0, 52.0, 4, (int)FilterTypes::BUTTERWORTH, 0.0);
     DataFilter::perform_bandpass(data, n, fs, low, high, 4, (int)FilterTypes::BUTTERWORTH, 0.0);
+}
+
+void SSVEPDetector::SetChannelWeights(const float weight[4]) {
+    if (!weight) return;
+    for (int ch = 0; ch < 4; ++ch) {
+        channelWeight[ch] = weight[ch] > 0.0f ? weight[ch] : 0.0f;
+    }
 }
 
 void SSVEPDetector::SetWindowConfig(float windowSeconds, float hopSeconds) {
@@ -409,14 +533,14 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
     int used[4];
     int nCh = 0;
     for (int ch = 0; ch < 4; ++ch) {
-        if (enabled[ch] && channels[ch]) used[nCh++] = ch;
+        if (enabled[ch] && channels[ch] && channelWeight[ch] > 0.0f) used[nCh++] = ch;
     }
     if (nCh <= 0) return;
 
     const float* snrChannels[4] = {};
     for (int c = 0; c < nCh; ++c) snrChannels[used[c]] = channels[used[c]];
     float harmonic[4] = {};
-    if (MeasureHarmonicSnr(snrChannels, nSamples, fs, snap.targetHz, harmonic)) {
+    if (MeasureHarmonicSnr(snrChannels, nSamples, fs, snap.targetHz, harmonic, channelWeight)) {
         for (int t = 0; t < 4; ++t) snap.harmonicSnr[t] = harmonic[t];
     }
 
@@ -444,10 +568,10 @@ void SSVEPDetector::Analyze(const float* const channels[4], const bool enabled[4
     }
 
     float weightMax = 0.0f;
-    for (int c = 0; c < nCh; ++c) weightMax = std::max(weightMax, kChannelWeight[used[c]]);
+    for (int c = 0; c < nCh; ++c) weightMax = std::max(weightMax, channelWeight[used[c]]);
     Eigen::VectorXd penalty(nCh);
     for (int c = 0; c < nCh; ++c) {
-        const float weight = kChannelWeight[used[c]];
+        const float weight = std::max(channelWeight[used[c]], 1.0e-4f);
         penalty(c) = static_cast<double>(kCcaPenalty) * (static_cast<double>(weightMax) / weight - 1.0);
     }
 

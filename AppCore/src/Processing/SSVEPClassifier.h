@@ -38,10 +38,20 @@ struct SSVEPDetectSnapshot {
     std::uint32_t epoch = 0;
 };
 
+// Used until a Null trial has been recorded.
+inline constexpr float kChannelWeightPrior[4] = { 0.20f, 0.30f, 0.30f, 0.20f };
+
 // Hann SNR at each target: channel weight * (SNR(f) + 0.5 * SNR(2f)).
-// A null channel pointer is skipped. Power is the squared one-sided spectrum.
+// A null channel pointer or a zero weight is skipped. Power is the squared
+// one-sided spectrum. A null weight pointer uses kChannelWeightPrior.
 bool MeasureHarmonicSnr(const float* const channels[4], int nSamples, int fs,
-    const float targetHz[4], float outSnr[4]);
+    const float targetHz[4], float outSnr[4], const float channelWeight[4] = nullptr);
+// Weights from a stationary Null trial. Median in-band power is the noise,
+// a spiky spectrum counts as dirtier, and a dead or railed channel is 0.
+// The prior is divided by that noise and the four weights are normalized.
+// Returns false when the trial cannot be scored; outWeight is then the prior.
+bool ChannelWeightsFromNull(const float* const channels[4], int nSamples, int fs,
+    const float targetHz[4], float outWeight[4]);
 // Power at the Hann bin nearest targetHz, the highest of the four channels.
 // Same 4–40 Hz bandpass the calibration plot uses, so the guide line
 // sits on the filtered spectrum. The saved CSV stays unfiltered.
@@ -56,6 +66,7 @@ public:
     void SetRefreshHz(int hz);
     void SetTargetFrequencies(const float hz[4]);
     void SetWindowConfig(float windowSeconds, float hopSeconds);
+    void SetChannelWeights(const float weight[4]);
     void NoteProgress(float secondsCollected, int fs);
     void Analyze(const float* const channels[4], const bool enabled[4], int nSamples, int fs);
     SSVEPDetectSnapshot Snapshot() const { return snap; }
@@ -69,6 +80,7 @@ private:
     float voteScore[kSSVEPVoteLength] = {};
     int voteFilled = 0;
     int voteWrite = 0;
+    float channelWeight[4] = { 0.20f, 0.30f, 0.30f, 0.20f };
     SSVEPDetectSnapshot snap{};
 
     void PushVote(int target, float score);

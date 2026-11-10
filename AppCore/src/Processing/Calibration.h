@@ -57,6 +57,8 @@ public:
     void SetLineScale(int board, float lineScale);
     void ResetSnrThreshold(int board);
     bool CopySnrThreshold(int board, SSVEPBoardThreshold& out) const;
+    // Prior until a Null trial is stored, then the weights from that trial.
+    void CopyChannelWeights(float out[4]) const;
 
 private:
     void Begin(const std::vector<int>& boards, const SSVEPBoardLayout& layout,
@@ -105,6 +107,8 @@ private:
 
     SSVEPCalibrationTrial stored_[kSSVEPBoardCount];
     SSVEPBoardThreshold threshold_[kSSVEPFlickerBoardCount];
+    float channelWeight_[4] = { 0.20f, 0.30f, 0.30f, 0.20f };
+    bool channelWeightFromNull_ = false;
     std::vector<std::array<float, 4>> scratchSamples_;
     int scratchRate_ = 200;
     mutable std::mutex mutex_;
