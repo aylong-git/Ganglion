@@ -38,6 +38,7 @@
 #include <iomanip>
 #include <string>
 #include <utility>
+#include <vector>
 
 #pragma comment(lib, "setupapi.lib")
 
@@ -277,6 +278,8 @@ bool UIManager::Initialize() {
         ImFontConfig keyCfg = fontConfig;
         SSVEPKeyFont = io.Fonts->AddFontFromFileTTF(
             GetAssetPath("Nunito-ExtraBold.ttf").c_str(), 32.0f * scaleFactor, &keyCfg);
+        GameFont = io.Fonts->AddFontFromFileTTF(
+            GetAssetPath("Nunito-ExtraBold.ttf").c_str(), 16.0f * scaleFactor, &keyCfg);
 #if defined(_WIN32)
         // Nunito has the punctuation captions, but not the four short arrows.
         // Merge only U+2190..U+2193 from Segoe UI so those glyphs actually draw.
@@ -2677,6 +2680,8 @@ void UIManager::DrawCalibrationSavePopup() {
     ImGui::End();
 }
 
+bool OpenMeaning(const char* id, const char* body);
+
 void UIManager::DrawSignalEEGPanel() {
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float recBtnW = 120.0f * m_dpiScale;
@@ -2701,6 +2706,9 @@ void UIManager::DrawSignalEEGPanel() {
         }
         ImGui::PopStyleColor(3);
     }
+    ImGui::SameLine();
+    OpenMeaning("waves",
+        "The numbers on the line are microvolts. A taller line is a bigger signal. The time window stays five seconds wide.");
 
     EEGPlotSnapshot snap;
     {
@@ -2708,11 +2716,21 @@ void UIManager::DrawSignalEEGPanel() {
         snap = eegPlot;
     }
 
-    const float rowGap = ImGui::GetStyle().ItemSpacing.y;
+    const float gapX = ImGui::GetStyle().ItemSpacing.x;
+    const float gapY = ImGui::GetStyle().ItemSpacing.y;
+    const ImVec2 gridOrigin = ImGui::GetCursorScreenPos();
+    const ImVec2 grid = ImGui::GetContentRegionAvail();
+    const float rowH = std::max(72.0f * m_dpiScale, std::floor((grid.y - gapY * 3.0f) / 4.0f));
+    const float imageW = rowH;
+    const float plotW = std::max(80.0f, grid.x - imageW - gapX);
     const float windowH = 5.0f;
-    const float xAxisHeight = 2.0f * ImGui::GetTextLineHeight() + 8.0f * m_dpiScale;
-    float availY = ImGui::GetContentRegionAvail().y;
-    float baseRowH = std::max(48.0f * m_dpiScale, (availY - 3.0f * rowGap - xAxisHeight) / 4.0f);
+
+    double xMax = windowH;
+    for (int ch = 0; ch < 4; ++ch) {
+        const int n = std::clamp(snap.count[ch], 0, kEEGPlotCapacity);
+        if (snap.hadData[ch] && n > 1) xMax = std::max(xMax, static_cast<double>(snap.t[ch][n - 1]));
+    }
+    const double xMin = xMax - windowH;
 
     const ImVec4 liveCols[4] = {
         ImVec4(0.20f, 0.62f, 0.92f, 1.0f),
@@ -2721,40 +2739,43 @@ void UIManager::DrawSignalEEGPanel() {
         ImVec4(0.78f, 0.38f, 0.74f, 1.0f)
     };
     const ImVec4 greyLine = ImVec4(0.55f, 0.55f, 0.55f, 1.0f);
+    const ImGuiChildFlags boxFlags = ImGuiChildFlags_Borders;
+    const ImGuiWindowFlags noScroll = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
     for (int ch = 0; ch < 4; ++ch) {
-        float rowH = (ch == 3) ? ImGui::GetContentRegionAvail().y : baseRowH;
+        const float y = gridOrigin.y + ch * (rowH + gapY);
+        ImGui::PushID(ch);
+        ImGui::SetCursorScreenPos(ImVec2(gridOrigin.x, y));
+        ImGui::BeginChild("##wavePlaceholder", ImVec2(imageW, rowH), boxFlags, noScroll);
+        const char* hold = "Electrode";
+        char channelName[24];
+        snprintf(channelName, sizeof(channelName), "Channel %d", ch + 1);
+        const ImVec2 holdSize = ImGui::CalcTextSize(hold);
+        const ImVec2 nameSize = ImGui::CalcTextSize(channelName);
+        const float blockH = holdSize.y + ImGui::GetStyle().ItemSpacing.y + nameSize.y;
+        const ImVec2 box = ImGui::GetContentRegionAvail();
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + std::max(0.0f, (box.y - blockH) * 0.5f));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (box.x - holdSize.x) * 0.5f));
+        ImGui::TextDisabled("%s", hold);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (box.x - nameSize.x) * 0.5f));
+        ImGui::TextUnformatted(channelName);
+        ImGui::EndChild();
 
-        char rowId[32];
-        snprintf(rowId, sizeof(rowId), "EEGRow%d", ch);
-        ImGui::BeginChild(rowId, ImVec2(0.0f, rowH), false,
-            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-
+        ImGui::SetCursorScreenPos(ImVec2(gridOrigin.x + imageW + gapX, y));
+        ImGui::BeginChild("##waveTrace", ImVec2(plotW, rowH), boxFlags, noScroll);
         const int n = std::clamp(snap.count[ch], 0, kEEGPlotCapacity);
         const bool hadData = snap.hadData[ch] && n > 1;
-
-        ImGui::BeginGroup();
-        const float frameH = ImGui::GetFrameHeight();
-        const float labelH = ImGui::GetTextLineHeight();
-        const float groupH = frameH + labelH + ImGui::GetStyle().ItemSpacing.y;
-        const float yOff = std::max(0.0f, (ImGui::GetContentRegionAvail().y - groupH) * 0.5f);
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOff);
-
         char checkId[32];
         snprintf(checkId, sizeof(checkId), "##signal_eeg_ch%d", ch);
         ImGui::Checkbox(checkId, &eegChannels[ch]);
+        ImGui::SameLine();
         const bool on = eegChannels[ch];
         char chLabel[16];
         snprintf(chLabel, sizeof(chLabel), "Ch %d", ch + 1);
         if (on) ImGui::TextUnformatted(chLabel);
         else ImGui::TextDisabled("%s", chLabel);
-        ImGui::EndGroup();
-
-        ImGui::SameLine(0.0f, 8.0f * m_dpiScale);
 
         float yDisp[kEEGPlotCapacity];
-        double xMin = 0.0;
-        double xMax = windowH;
         double yMin = -100.0;
         double yMax = 100.0;
         if (hadData) {
@@ -2768,28 +2789,17 @@ void UIManager::DrawSignalEEGPanel() {
                 if (i == 0 || yDisp[i] < lo) lo = yDisp[i];
                 if (i == 0 || yDisp[i] > hi) hi = yDisp[i];
             }
-            const double t0 = snap.t[ch][0];
-            const double t1 = snap.t[ch][n - 1];
-            if (t1 - t0 >= windowH) {
-                xMax = t1;
-                xMin = t1 - windowH;
-            } else {
-                xMin = t0;
-                xMax = t0 + windowH;
-            }
             const float span = std::max(50.0f, hi - lo);
             const float pad = span * 0.12f;
             yMin = lo - pad;
             yMax = hi + pad;
         }
 
-        const int styleColors = on ? 0 : 3;
         if (!on) {
             ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.16f, 0.16f, 0.16f, 1.0f));
             ImPlot::PushStyleColor(ImPlotCol_FrameBg, ImVec4(0.18f, 0.18f, 0.18f, 1.0f));
             ImPlot::PushStyleColor(ImPlotCol_AxisText, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         }
-
         ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(4.0f * m_dpiScale, 4.0f * m_dpiScale));
         ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2.0f * m_dpiScale, 2.0f * m_dpiScale));
 
@@ -2798,15 +2808,9 @@ void UIManager::DrawSignalEEGPanel() {
         const ImVec2 plotSize(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
         const ImPlotFlags flags = ImPlotFlags_NoTitle | ImPlotFlags_NoLegend |
             ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
-        const ImPlotAxisFlags xFlags = ImPlotAxisFlags_Lock |
-            (ch < 3 ? (ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoLabel)
-                    : ImPlotAxisFlags_None);
-        const ImPlotAxisFlags yFlags = ImPlotAxisFlags_Lock;
-
         if (ImPlot::BeginPlot(plotId, plotSize, flags)) {
-            ImPlot::SetupAxes(ch == 3 ? "Time (s)" : nullptr, "uV", xFlags, yFlags);
+            ImPlot::SetupAxes(ch == 3 ? "Time (s)" : nullptr, nullptr, ImPlotAxisFlags_Lock, ImPlotAxisFlags_Lock);
             ImPlot::SetupAxesLimits(xMin, xMax, yMin, yMax, ImPlotCond_Always);
-
             if (hadData) {
                 ImPlotSpec spec;
                 spec.LineColor = on ? liveCols[ch] : greyLine;
@@ -2814,22 +2818,21 @@ void UIManager::DrawSignalEEGPanel() {
                 spec.Flags = ImPlotItemFlags_NoLegend;
                 ImPlot::PlotLine("eeg", snap.t[ch].data(), yDisp, n, spec);
             }
-
             if (!on) {
                 ImPlot::PushStyleColor(ImPlotCol_InlayText, ImVec4(0.70f, 0.70f, 0.70f, 1.0f));
                 ImPlot::PlotText(hadData ? "Paused" : "OFF",
                     0.5 * (xMin + xMax), 0.5 * (yMin + yMax));
                 ImPlot::PopStyleColor();
             }
-
             ImPlot::EndPlot();
         }
-
         ImPlot::PopStyleVar(2);
-        if (styleColors > 0) ImPlot::PopStyleColor(styleColors);
-
+        if (!on) ImPlot::PopStyleColor(3);
         ImGui::EndChild();
+        ImGui::PopID();
     }
+    ImGui::SetCursorScreenPos(ImVec2(gridOrigin.x, gridOrigin.y + 4.0f * rowH + 3.0f * gapY));
+    ImGui::Dummy(ImVec2(grid.x, 0.0f));
 }
 
 namespace {
@@ -2927,6 +2930,165 @@ void DrawSSVEPScoreGraph(const SSVEPDetectSnapshot& snap) {
     }
 }
 
+void TextBoldColored(const ImVec4& color, const char* text) {
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImU32 col = ImGui::ColorConvertFloat4ToU32(color);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddText(pos, col, text);
+    draw->AddText(ImVec2(pos.x + 0.7f, pos.y), col, text);
+    const ImVec2 size = ImGui::CalcTextSize(text);
+    ImGui::Dummy(ImVec2(size.x + 0.7f, size.y));
+}
+
+const char* ImpedanceWord(float kiloOhms, bool on) {
+    if (!on) return "Off";
+    if (kiloOhms <= 10.0f) return "Snug";
+    if (kiloOhms <= 50.0f) return "Okay";
+    return "Loose";
+}
+
+ImVec4 ImpedanceWordColor(float kiloOhms, bool on) {
+    if (!on) return ImVec4(0.50f, 0.50f, 0.50f, 1.0f);
+    if (kiloOhms <= 10.0f) return ImVec4(49.0f / 255.0f, 113.0f / 255.0f, 89.0f / 255.0f, 1.0f);
+    if (kiloOhms <= 50.0f) return ImVec4(184.0f / 255.0f, 220.0f / 255.0f, 105.0f / 255.0f, 1.0f);
+    if (kiloOhms <= 100.0f) return ImVec4(221.0f / 255.0f, 178.0f / 255.0f, 13.0f / 255.0f, 1.0f);
+    return ImVec4(224.0f / 255.0f, 56.0f / 255.0f, 45.0f / 255.0f, 1.0f);
+}
+
+bool OpenMeaning(const char* id, const char* body) {
+    ImGui::PushID(id);
+    const bool pressed = ImGui::Button("?");
+    if (pressed) ImGui::OpenPopup("meaning");
+    if (ImGui::BeginPopup("meaning")) {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+        ImGui::TextUnformatted(body);
+        ImGui::PopTextWrapPos();
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    return pressed;
+}
+
+void DrawDonglePicture(ImDrawList* draw, ImVec2 a, ImVec2 b, bool present) {
+    const ImU32 ink = present ? IM_COL32(31, 111, 139, 255) : IM_COL32(176, 186, 192, 255);
+    const float w = b.x - a.x;
+    const float h = b.y - a.y;
+    const ImVec2 bodyMin(a.x + w * 0.30f, a.y + h * 0.22f);
+    const ImVec2 bodyMax(a.x + w * 0.70f, a.y + h * 0.78f);
+    draw->AddRectFilled(bodyMin, bodyMax, ink, h * 0.06f);
+    draw->AddRectFilled(
+        ImVec2(a.x + w * 0.38f, a.y + h * 0.10f),
+        ImVec2(a.x + w * 0.62f, a.y + h * 0.24f),
+        ink, 2.0f);
+    const ImU32 mark = present ? IM_COL32(255, 255, 255, 230) : IM_COL32(255, 255, 255, 140);
+    draw->AddRectFilled(
+        ImVec2(bodyMin.x + w * 0.08f, bodyMin.y + h * 0.16f),
+        ImVec2(bodyMax.x - w * 0.08f, bodyMin.y + h * 0.22f),
+        mark);
+}
+
+void DrawSwitchPicture(ImDrawList* draw, ImVec2 a, ImVec2 b, bool on) {
+    const float w = b.x - a.x;
+    const float h = b.y - a.y;
+    const ImU32 board = IM_COL32(27, 58, 75, 255);
+    const ImVec2 bodyMin(a.x + w * 0.16f, a.y + h * 0.28f);
+    const ImVec2 bodyMax(a.x + w * 0.84f, a.y + h * 0.78f);
+    draw->AddRectFilled(bodyMin, bodyMax, board, h * 0.04f);
+    const ImVec2 trackMin(a.x + w * 0.38f, a.y + h * 0.40f);
+    const ImVec2 trackMax(a.x + w * 0.62f, a.y + h * 0.66f);
+    draw->AddRectFilled(trackMin, trackMax, IM_COL32(255, 255, 255, 230), 6.0f);
+    const float knobY = on ? trackMin.y + 2.0f : trackMax.y - (trackMax.x - trackMin.x) * 0.45f - 2.0f;
+    const float knob = (trackMax.x - trackMin.x) * 0.42f;
+    draw->AddRectFilled(
+        ImVec2(trackMin.x + 3.0f, knobY),
+        ImVec2(trackMax.x - 3.0f, knobY + knob),
+        on ? IM_COL32(31, 111, 139, 255) : IM_COL32(160, 170, 176, 255),
+        4.0f);
+}
+
+void DrawLedPicture(ImDrawList* draw, ImVec2 a, ImVec2 b, bool solid, bool lit) {
+    const float w = b.x - a.x;
+    const float h = b.y - a.y;
+    draw->AddRectFilled(
+        ImVec2(a.x + w * 0.22f, a.y + h * 0.30f),
+        ImVec2(a.x + w * 0.78f, a.y + h * 0.72f),
+        IM_COL32(27, 58, 75, 255),
+        h * 0.04f);
+    const ImU32 led = (solid || lit) ? IM_COL32(70, 150, 255, 255) : IM_COL32(30, 48, 70, 255);
+    draw->AddCircleFilled(ImVec2(a.x + w * 0.50f, a.y + h * 0.48f), h * 0.10f, led);
+}
+
+void DrawLessonNav(int& step, float dpi) {
+    const char* names[3] = { "Waves", "Lights", "Score" };
+    const char* hints[3] = {
+        "Watch the lines from the four stickers.",
+        "Look at a flickering square.",
+        "See which light the computer picked."
+    };
+    const int count = 3;
+    const float barH = 56.0f * dpi;
+    const float gap = 8.0f * dpi;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float cell = (width - gap * (count - 1)) / count;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    const ImU32 activeBg = IM_COL32(31, 111, 139, 255);
+    const ImU32 idleBg = IM_COL32(231, 238, 241, 255);
+    const ImU32 hoverBg = IM_COL32(214, 228, 234, 255);
+    const ImU32 ink = IM_COL32(27, 58, 75, 255);
+
+    for (int i = 0; i < count; ++i) {
+        const ImVec2 a(origin.x + i * (cell + gap), origin.y);
+        const ImVec2 b(a.x + cell, a.y + barH);
+        ImGui::SetCursorScreenPos(a);
+        ImGui::PushID(3000 + i);
+        ImGui::InvisibleButton("##lessonStep", ImVec2(cell, barH));
+        const bool hovered = ImGui::IsItemHovered();
+        if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsItemClicked()) step = i;
+        ImGui::PopID();
+
+        const bool on = step == i;
+        draw->AddRectFilled(a, b, on ? activeBg : (hovered ? hoverBg : idleBg), 12.0f * dpi);
+
+        const float radius = 12.0f * dpi;
+        const ImVec2 center(a.x + 18.0f * dpi + radius, a.y + barH * 0.5f);
+        draw->AddCircleFilled(center, radius, on ? IM_COL32(255, 255, 255, 255) : activeBg);
+        char number[4];
+        snprintf(number, sizeof(number), "%d", i + 1);
+        const ImVec2 numberSize = ImGui::CalcTextSize(number);
+        draw->AddText(
+            ImVec2(center.x - numberSize.x * 0.5f, center.y - numberSize.y * 0.5f),
+            on ? activeBg : IM_COL32(255, 255, 255, 255),
+            number);
+
+        const ImVec2 nameSize = ImGui::CalcTextSize(names[i]);
+        draw->AddText(
+            ImVec2(center.x + radius + 10.0f * dpi, a.y + (barH - nameSize.y) * 0.5f),
+            on ? IM_COL32(255, 255, 255, 255) : ink,
+            names[i]);
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + barH + 6.0f * dpi));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.22f, 0.36f, 0.43f, 1.0f));
+    ImGui::TextUnformatted(hints[std::clamp(step, 0, count - 1)]);
+    ImGui::PopStyleColor();
+}
+
+bool DrawLessonChoice(const char* id, const char* label, bool on, float dpi) {
+    if (on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.44f, 0.55f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.16f, 0.50f, 0.62f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.36f, 0.46f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    }
+    const ImVec2 size(ImGui::CalcTextSize(label).x + 22.0f * dpi, ImGui::GetFrameHeight());
+    const bool pressed = ImGui::Button(id, size);
+    if (on) ImGui::PopStyleColor(4);
+    return pressed;
+}
+
 void UIManager::DrawSignalSpectrumPanel() {
     ImGui::SetNextItemWidth(180.0f * m_dpiScale);
     ImGui::SliderFloat("SSVEP window", &SSVEPWindowDuration, 3.0f, 7.0f, "%.1f s");
@@ -2938,6 +3100,596 @@ void UIManager::DrawSignalSpectrumPanel() {
         snap = SSVEPDetect;
     }
     DrawSSVEPScoreGraph(snap);
+}
+
+bool RaceGlyph(ImGuiKey key, char& out) {
+    if (key >= ImGuiKey_A && key <= ImGuiKey_Z) {
+        out = static_cast<char>('A' + (key - ImGuiKey_A));
+        return true;
+    }
+    if (key >= ImGuiKey_0 && key <= ImGuiKey_9) {
+        out = static_cast<char>('0' + (key - ImGuiKey_0));
+        return true;
+    }
+    if (key >= ImGuiKey_Keypad0 && key <= ImGuiKey_Keypad9) {
+        out = static_cast<char>('0' + (key - ImGuiKey_Keypad0));
+        return true;
+    }
+    switch (key) {
+    case ImGuiKey_Space: out = ' '; return true;
+    case ImGuiKey_Minus: case ImGuiKey_KeypadSubtract: out = '-'; return true;
+    case ImGuiKey_Equal: case ImGuiKey_KeypadEqual: out = '='; return true;
+    case ImGuiKey_Comma: out = ','; return true;
+    case ImGuiKey_Period: case ImGuiKey_KeypadDecimal: out = '.'; return true;
+    case ImGuiKey_Slash: case ImGuiKey_KeypadDivide: out = '/'; return true;
+    case ImGuiKey_Semicolon: out = ';'; return true;
+    case ImGuiKey_Apostrophe: out = '\''; return true;
+    case ImGuiKey_GraveAccent: out = '`'; return true;
+    case ImGuiKey_LeftBracket: out = '['; return true;
+    case ImGuiKey_RightBracket: out = ']'; return true;
+    case ImGuiKey_Backslash: out = '\\'; return true;
+    case ImGuiKey_KeypadMultiply: out = '*'; return true;
+    case ImGuiKey_KeypadAdd: out = '+'; return true;
+    default: return false;
+    }
+}
+
+std::string BuildTypeRacerText(int count, bool letters) {
+    bool seen[128] = {};
+    std::string alphabet;
+    auto& input = InputManager::GetInstance();
+    for (int i = 0; i < 4; ++i) {
+        char glyph = 0;
+        if (!RaceGlyph(input.GetKey(i), glyph) || glyph == ' ') continue;
+        const unsigned char u = static_cast<unsigned char>(glyph);
+        if (u < 128 && !seen[u]) {
+            seen[u] = true;
+            alphabet.push_back(glyph);
+        }
+    }
+    if (alphabet.empty()) return {};
+
+    if (count < 1) count = 1;
+    if (count > 200) count = 200;
+    static std::mt19937 rng{ std::random_device{}() };
+    std::uniform_int_distribution<int> pick(0, static_cast<int>(alphabet.size()) - 1);
+    std::uniform_int_distribution<int> wordLen(2, 6);
+    std::string text;
+    if (!letters) {
+        for (int w = 0; w < count; ++w) {
+            const int n = wordLen(rng);
+            for (int k = 0; k < n; ++k) text.push_back(alphabet[static_cast<size_t>(pick(rng))]);
+            if (w + 1 < count) text.push_back(' ');
+        }
+        return text;
+    }
+    int placed = 0;
+    while (placed < count) {
+        if (!text.empty() && text.back() != ' ') text.push_back(' ');
+        int n = wordLen(rng);
+        const int room = count - placed;
+        if (n > room) n = room;
+        if (n < 1) break;
+        for (int k = 0; k < n; ++k) {
+            text.push_back(alphabet[static_cast<size_t>(pick(rng))]);
+            ++placed;
+        }
+    }
+    return text;
+}
+
+bool TypeRacerHasLetters() {
+    auto& input = InputManager::GetInstance();
+    for (int i = 0; i < 4; ++i) {
+        char glyph = 0;
+        if (RaceGlyph(input.GetKey(i), glyph) && glyph != ' ') return true;
+    }
+    return false;
+}
+
+std::string TypeRacerLetterSig() {
+    std::string sig;
+    auto& input = InputManager::GetInstance();
+    for (int i = 0; i < 4; ++i) {
+        char glyph = 0;
+        if (RaceGlyph(input.GetKey(i), glyph) && glyph != ' ') sig.push_back(glyph);
+        sig.push_back('|');
+    }
+    return sig;
+}
+
+struct RaceCarOption {
+    const char* name;
+    const char* file;
+};
+
+static const RaceCarOption kRaceCars[] = {
+    { "Racecar", "racecars/car.png" },
+    { "Rocket", "racecars/rocket.png" },
+    { "Horse", "racecars/horse.png" },
+    { "Skateboard", "racecars/skateboard.png" },
+    { "Sketch", "racecars/sketch.png" },
+    { "UFO", "racecars/ufo.png" },
+    { "Shark", "racecars/shark.png" },
+    { "Helicopter", "racecars/helicopter.png" },
+    { "CyberBike", "racecars/cyber.png" },
+    { "Zomboni", "racecars/zomboni.png" },
+    { "Broomstick", "racecars/broom.png" },
+    { "Tank", "racecars/tank.png" },
+    { "Meteor", "racecars/meteor.png" },
+    { "Bicycle", "racecars/bicycle.png" },
+    { "Toothless", "racecars/toothless.png" },
+};
+static constexpr int kRaceCarCount = 15;
+static int gRaceCarIndex = 0;
+static unsigned gRaceCarTex[kRaceCarCount] = {};
+static bool gRaceCarsLoaded = false;
+
+void LoadRaceCars() {
+    if (gRaceCarsLoaded) return;
+    gRaceCarsLoaded = true;
+    for (int i = 0; i < kRaceCarCount; ++i) {
+        const std::string path = GetAssetPath(kRaceCars[i].file);
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec))
+            gRaceCarTex[i] = LoadComponentTexture(path.c_str());
+    }
+}
+
+int CountBoardLetters(const std::string& text, int upto) {
+    int n = 0;
+    const int lim = std::min(upto, static_cast<int>(text.size()));
+    for (int i = 0; i < lim; ++i) {
+        if (text[static_cast<size_t>(i)] != ' ') ++n;
+    }
+    return n;
+}
+
+double LettersPerHour(int letters, double seconds) {
+    if (seconds < 0.05) return 0.0;
+    return static_cast<double>(letters) * 3600.0 / seconds;
+}
+
+int RaceScriptCount(int mode, int customLetters) {
+    if (mode == 0) return 10;
+    if (mode == 1) return 20;
+    if (mode == 2) return 30;
+    return customLetters;
+}
+
+void DrawRaceLengthBar(float dpi, int& scriptMode, int& customLetters, char* customBuf, size_t bufN) {
+    const char* lengthNames[] = { "Short", "Medium", "Long", "Custom" };
+    for (int i = 0; i < 4; ++i) {
+        if (i > 0) ImGui::SameLine();
+        const bool on = scriptMode == i;
+        if (on) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.44f, 0.55f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.16f, 0.50f, 0.62f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.36f, 0.46f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        }
+        if (ImGui::Button(lengthNames[i], ImVec2(96.0f * dpi, 0.0f))) scriptMode = i;
+        if (on) ImGui::PopStyleColor(4);
+    }
+    if (scriptMode == 3) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(72.0f * dpi);
+        ImGui::InputText("##raceCustomLen", customBuf, bufN, ImGuiInputTextFlags_CharsDecimal);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            float typed = 0.0f;
+            if (std::sscanf(customBuf, "%f", &typed) == 1) {
+                int n = static_cast<int>(std::lround(static_cast<double>(typed)));
+                if (n < 1) n = 1;
+                if (n > 200) n = 200;
+                customLetters = n;
+            }
+            snprintf(customBuf, bufN, "%d", customLetters);
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted("letters");
+    }
+}
+
+bool DrawRaceFinishPanel(float dpi, int letters, double seconds, double lph, int carIndex,
+    const std::vector<double>& history) {
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float availH = ImGui::GetContentRegionAvail().y;
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    const float againH = 36.0f * dpi;
+    const float rowH = std::max(120.0f * dpi, availH - againH - ImGui::GetStyle().ItemSpacing.y);
+    const float leftW = std::max(160.0f * dpi, (availW - gap) * 0.5f);
+    const float rightW = std::max(120.0f * dpi, availW - leftW - gap);
+
+    ImGui::BeginChild("##raceFinishLeft", ImVec2(leftW, rowH), ImGuiChildFlags_None);
+    {
+        const ImVec2 inner = ImGui::GetContentRegionAvail();
+        const float linePx = std::max(1.0f, ImGui::GetTextLineHeightWithSpacing());
+        const float imgW = std::min(168.0f * dpi, inner.x * 0.55f);
+        const float imgH = imgW * (960.0f / 1280.0f);
+        const float textRoom = std::max(linePx * 6.0f, inner.y - imgH);
+        const float fontScale = std::min(4.2f, textRoom / (linePx * 6.0f));
+        const bool carOk = carIndex >= 0 && carIndex < kRaceCarCount;
+        const char* carName = carOk ? kRaceCars[carIndex].name : "Racer";
+        const unsigned tex = carOk ? gRaceCarTex[carIndex] : 0;
+        const float imgX = (inner.x - imgW) * 0.5f;
+        const ImVec2 imgPos = ImGui::GetCursorScreenPos();
+        const ImVec2 imgDraw(imgPos.x + imgX, imgPos.y);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(imgDraw, ImVec2(imgDraw.x + imgW, imgDraw.y + imgH), IM_COL32(255, 255, 255, 255), 8.0f);
+        if (tex != 0) {
+            dl->AddImage((ImTextureID)(intptr_t)tex, imgDraw, ImVec2(imgDraw.x + imgW, imgDraw.y + imgH),
+                ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255));
+        }
+        ImGui::Dummy(ImVec2(inner.x, imgH));
+
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * fontScale);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.16f, 0.33f, 0.55f, 1.0f));
+        ImGui::TextUnformatted("Race complete");
+        ImGui::PopStyleColor();
+        ImGui::Text("Racer: You");
+        ImGui::Text("Racecar: %s", carName);
+        ImGui::Text("Letters: %d", letters);
+        const int mins = static_cast<int>(seconds / 60.0);
+        const double secs = seconds - static_cast<double>(mins) * 60.0;
+        ImGui::Text("Time: %d:%04.1f", mins, secs);
+        ImGui::Text("LPH: %d", static_cast<int>(std::lround(lph)));
+        ImGui::PopFont();
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##raceFinishRight", ImVec2(rightW, rowH), ImGuiChildFlags_None);
+    {
+        const float plotH = ImGui::GetContentRegionAvail().y;
+        const ImPlotFlags flags = ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
+        if (ImPlot::BeginPlot("##raceSessionLph", ImVec2(-1.0f, plotH), flags)) {
+            const int n = static_cast<int>(history.size());
+            double yMax = 1.0;
+            for (double v : history) yMax = std::max(yMax, v);
+            ImPlot::SetupAxes("Races", "LPH");
+            ImPlot::SetupAxesLimits(1.0, 5.0, 0.0, yMax * 1.2, ImPlotCond_Once);
+            const double ticks[] = { 1, 2, 3, 4, 5 };
+            const char* labels[] = { "1", "2", "3", "4", "5" };
+            ImPlot::SetupAxisTicks(ImAxis_X1, ticks, 5, labels, false);
+            if (n > 0) {
+                std::vector<double> xs(static_cast<size_t>(n));
+                for (int i = 0; i < n; ++i) xs[static_cast<size_t>(i)] = static_cast<double>(i + 1);
+                ImPlotSpec spec;
+                spec.Marker = ImPlotMarker_Circle;
+                spec.MarkerSize = 4.0f;
+                spec.LineWeight = 1.5f;
+                spec.LineColor = ImVec4(0.12f, 0.44f, 0.55f, 1.0f);
+                spec.MarkerFillColor = ImVec4(0.12f, 0.44f, 0.55f, 1.0f);
+                ImPlot::PlotLine("LPH", xs.data(), history.data(), n, spec);
+            }
+            ImPlot::EndPlot();
+        }
+    }
+    ImGui::EndChild();
+
+    const ImVec2 againSize(160.0f * dpi, againH);
+    const float spare = ImGui::GetContentRegionAvail().x - againSize.x;
+    if (spare > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + spare * 0.5f);
+    return ImGui::Button("Race again", againSize);
+}
+
+void DrawCarPlaceholder(ImDrawList* draw, ImVec2 pos, ImVec2 size, ImU32 color, unsigned texture) {
+    if (texture != 0) {
+        draw->AddImage((ImTextureID)(intptr_t)texture, pos, ImVec2(pos.x + size.x, pos.y + size.y),
+            ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255));
+        return;
+    }
+    draw->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), color, size.y * 0.35f);
+    draw->AddRectFilled(
+        ImVec2(pos.x + size.x * 0.28f, pos.y + size.y * 0.12f),
+        ImVec2(pos.x + size.x * 0.72f, pos.y + size.y * 0.55f),
+        IM_COL32(255, 255, 255, 180),
+        3.0f);
+}
+
+void DrawTypeRacer(float dpi, ImFont* passageFont) {
+    enum Phase { Idle, Countdown, Racing, Finished };
+    static int phase = Idle;
+    static double countEnd = 0.0;
+    static double raceStart = 0.0;
+    static std::string passage;
+    static int cursor = 0;
+    static bool paused = false;
+    static double pauseBegan = 0.0;
+    static int scriptMode = 1;
+    static int customLetters = 10;
+    static char customBuf[32] = "10";
+    static int builtWords = -1;
+    static int builtMode = -1;
+    static std::string builtSig;
+    static bool resultLogged = false;
+    static double finishSeconds = 0.0;
+    static int finishLetters = 0;
+    static double finishLph = 0.0;
+    static int finishCar = 0;
+    static std::vector<double> sessionLph;
+    static unsigned goalTex = 0;
+    static bool goalTried = false;
+    LoadRaceCars();
+    if (!goalTried) {
+        goalTried = true;
+        const std::string goalPath = GetAssetPath("racecars/goal.png");
+        std::error_code goalEc;
+        if (std::filesystem::exists(goalPath, goalEc)) goalTex = LoadComponentTexture(goalPath.c_str());
+    }
+    const bool byLetters = true;
+    const int scriptWords = RaceScriptCount(scriptMode, customLetters);
+    const std::string letterSig = TypeRacerLetterSig();
+    if (phase == Idle) {
+        if (!TypeRacerHasLetters()) {
+            if (!passage.empty()) {
+                passage.clear();
+                cursor = 0;
+            }
+        }
+        else if (passage.empty() || builtMode != scriptMode || builtWords != scriptWords || builtSig != letterSig) {
+            passage = BuildTypeRacerText(scriptWords, byLetters);
+            builtMode = scriptMode;
+            builtWords = scriptWords;
+            builtSig = letterSig;
+            cursor = 0;
+        }
+    }
+
+    const double now = glfwGetTime();
+    const double clockNow = paused ? pauseBegan : now;
+    if (!paused && phase == Countdown && now >= countEnd) {
+        phase = Racing;
+        raceStart = now;
+    }
+    if (!paused && phase == Racing && !passage.empty() && cursor >= static_cast<int>(passage.size())) {
+        phase = Finished;
+    }
+
+    if (!paused && phase == Racing && cursor < static_cast<int>(passage.size())) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && cursor > 0) {
+            --cursor;
+            while (cursor > 0 && passage[static_cast<size_t>(cursor)] == ' ') --cursor;
+        }
+        else if (passage[static_cast<size_t>(cursor)] != ' ') {
+            auto& input = InputManager::GetInstance();
+            ImGuiKey seen[4] = {};
+            int nSeen = 0;
+            for (int i = 0; i < 4; ++i) {
+                const ImGuiKey key = input.GetKey(i);
+                char glyph = 0;
+                if (!RaceGlyph(key, glyph) || glyph == ' ') continue;
+                bool dup = false;
+                for (int j = 0; j < nSeen; ++j) if (seen[j] == key) dup = true;
+                if (dup || !ImGui::IsKeyPressed(key)) continue;
+                seen[nSeen++] = key;
+                if (glyph == passage[static_cast<size_t>(cursor)]) {
+                    ++cursor;
+                    break;
+                }
+            }
+        }
+        while (cursor < static_cast<int>(passage.size()) && passage[static_cast<size_t>(cursor)] == ' ') ++cursor;
+    }
+    if (phase == Racing && !passage.empty() && cursor >= static_cast<int>(passage.size())) {
+        phase = Finished;
+    }
+    if (phase == Finished && !resultLogged) {
+        finishSeconds = std::max(0.0, clockNow - raceStart);
+        finishLetters = CountBoardLetters(passage, static_cast<int>(passage.size()));
+        finishLph = LettersPerHour(finishLetters, finishSeconds);
+        finishCar = gRaceCarIndex;
+        sessionLph.push_back(finishLph);
+        resultLogged = true;
+    }
+    if (phase == Finished) {
+        if (DrawRaceFinishPanel(dpi, finishLetters, finishSeconds, finishLph, finishCar, sessionLph)) {
+            passage = BuildTypeRacerText(scriptWords, byLetters);
+            builtMode = scriptMode;
+            builtWords = scriptWords;
+            builtSig = letterSig;
+            cursor = 0;
+            paused = false;
+            resultLogged = false;
+            phase = Idle;
+        }
+        return;
+    }
+
+    DrawRaceLengthBar(dpi, scriptMode, customLetters, customBuf, sizeof(customBuf));
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.16f, 0.33f, 0.55f, 1.0f));
+    if (paused) ImGui::TextUnformatted("Paused");
+    else if (phase == Racing) ImGui::TextUnformatted("Go!");
+    else if (phase == Finished) ImGui::TextUnformatted("Race complete");
+    else ImGui::TextUnformatted("The race is about to start!");
+    ImGui::PopStyleColor();
+
+    const float statusW = 280.0f * dpi;
+    const float statusH = 54.0f * dpi;
+    ImGui::SameLine(std::max(statusW + 12.0f * dpi, ImGui::GetContentRegionAvail().x - statusW));
+    const ImVec2 statusPos = ImGui::GetCursorScreenPos();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRect(statusPos, ImVec2(statusPos.x + statusW, statusPos.y + statusH), IM_COL32(20, 20, 20, 255), 0.0f, 0, 2.0f);
+    const char* status = paused ? "Paused" : ((phase == Racing || phase == Finished) ? "Type!" : "Get ready to race!");
+    draw->AddText(ImVec2(statusPos.x + 12.0f * dpi, statusPos.y + 16.0f * dpi), IM_COL32(20, 20, 20, 255), status);
+    int showSeconds = 3;
+    if (phase == Countdown) showSeconds = std::max(0, static_cast<int>(std::ceil(countEnd - clockNow)));
+    else if (phase == Racing || phase == Finished) showSeconds = 0;
+    char clock[16];
+    snprintf(clock, sizeof(clock), ":%02d", showSeconds);
+    const ImVec2 clockSize = ImGui::CalcTextSize(clock);
+    draw->AddText(ImVec2(statusPos.x + statusW - clockSize.x - 12.0f * dpi, statusPos.y + 14.0f * dpi),
+        IM_COL32(20, 20, 20, 255), clock);
+    ImGui::Dummy(ImVec2(statusW, statusH));
+
+    const float trackW = ImGui::GetContentRegionAvail().x;
+    const float carW = 168.0f * dpi;
+    const float carH = carW * (960.0f / 1280.0f);
+    const float laneH = carH + 4.0f * dpi;
+    const float labelW = 48.0f * dpi;
+    const float elapsed = (phase == Racing) ? static_cast<float>(clockNow - raceStart) : 0.0f;
+    const float player = passage.empty() ? 0.0f : static_cast<float>(cursor) / static_cast<float>(passage.size());
+    const int typedLetters = CountBoardLetters(passage, cursor);
+    const int lph = static_cast<int>(std::lround(LettersPerHour(typedLetters, elapsed)));
+
+    ImGui::TextUnformatted("You");
+    ImGui::SameLine(labelW);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float lineY = origin.y + laneH * 0.78f;
+    const float lineR = origin.x + trackW - labelW;
+    const float goalW = carH * 1.2f;
+    const float goalH = carH;
+    const float goalX = lineR - goalW;
+    for (float x = origin.x; x < goalX; x += 14.0f * dpi) {
+        draw->AddLine(ImVec2(x, lineY), ImVec2(std::min(goalX, x + 8.0f * dpi), lineY), IM_COL32(210, 190, 90, 255), 1.5f);
+    }
+    const float travel = std::max(0.0f, goalX - origin.x - carW - 8.0f * dpi);
+    const unsigned carTex = (gRaceCarIndex >= 0 && gRaceCarIndex < kRaceCarCount) ? gRaceCarTex[gRaceCarIndex] : 0;
+    DrawCarPlaceholder(draw, ImVec2(origin.x + travel * player, origin.y), ImVec2(carW, carH),
+        IM_COL32(120, 170, 70, 255), carTex);
+    if (goalTex != 0) {
+        draw->AddImage((ImTextureID)(intptr_t)goalTex, ImVec2(goalX, origin.y), ImVec2(goalX + goalW, origin.y + goalH),
+            ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255));
+    }
+    char wpmBuf[16];
+    snprintf(wpmBuf, sizeof(wpmBuf), "%d LPH", lph);
+    const ImVec2 wpmSize = ImGui::CalcTextSize(wpmBuf);
+    draw->AddText(ImVec2(goalX - wpmSize.x - 8.0f * dpi, origin.y + 4.0f * dpi), IM_COL32(90, 110, 140, 255), wpmBuf);
+    ImGui::Dummy(ImVec2(trackW - labelW, laneH));
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.95f, 0.96f, 0.98f, 1.0f));
+        if (passageFont) ImGui::PushFont(passageFont, ImGui::GetStyle().FontSizeBase * 2.2f);
+    ImGui::BeginChild("##racePassage", ImVec2(0.0f, 320.0f * dpi), ImGuiChildFlags_Borders);
+    if (passage.empty()) {
+        ImGui::TextDisabled("Set a letter on a flickering board, then press Start.");
+    }
+    else {
+        const float wrap = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+        for (int i = 0; i < static_cast<int>(passage.size()); ++i) {
+            char one[2] = { passage[static_cast<size_t>(i)], '\0' };
+            const ImVec2 sz = ImGui::CalcTextSize(one);
+            if (ImGui::GetCursorPosX() + sz.x > wrap && one[0] != ' ') ImGui::NewLine();
+            ImVec4 col(0.62f, 0.66f, 0.72f, 1.0f);
+            if (i < cursor) col = ImVec4(0.08f, 0.08f, 0.08f, 1.0f);
+            else if (i == cursor && phase == Racing && !paused) col = ImVec4(0.10f, 0.35f, 0.75f, 1.0f);
+            ImGui::TextColored(col, "%s", one);
+            ImGui::SameLine(0.0f, 0.0f);
+        }
+    }
+    if (passageFont) ImGui::PopFont();
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(1, 1, 1, 1));
+    ImGui::BeginChild("##raceInput", ImVec2(-1.0f, ImGui::GetFrameHeight() + 16.0f * dpi), ImGuiChildFlags_Borders);
+    if (phase == Idle || phase == Countdown) {
+        ImGui::TextDisabled("Type the above text here when the race begins");
+    }
+    else {
+        ImGui::TextUnformatted(passage.substr(0, static_cast<size_t>(cursor)).c_str());
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    const ImVec2 raceButton(140.0f * dpi, 36.0f * dpi);
+    const bool showPause = phase == Countdown || phase == Racing;
+    const float buttonGroupW = (phase != Idle && showPause)
+        ? raceButton.x * 2.0f + ImGui::GetStyle().ItemSpacing.x
+        : raceButton.x;
+    const float buttonSpare = ImGui::GetContentRegionAvail().x - buttonGroupW;
+    if (buttonSpare > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + buttonSpare * 0.5f);
+    if (phase == Idle) {
+        ImGui::BeginDisabled(!TypeRacerHasLetters());
+        if (ImGui::Button("Start", raceButton)) {
+            if (passage.empty() || builtMode != scriptMode || builtWords != scriptWords || builtSig != letterSig) {
+                passage = BuildTypeRacerText(scriptWords, byLetters);
+                builtMode = scriptMode;
+                builtWords = scriptWords;
+                builtSig = letterSig;
+            }
+            cursor = 0;
+            paused = false;
+            resultLogged = false;
+            if (!passage.empty()) {
+                phase = Countdown;
+                countEnd = glfwGetTime() + 3.0;
+            }
+        }
+        ImGui::EndDisabled();
+    }
+    else {
+        if (phase == Countdown || phase == Racing) {
+            if (ImGui::Button(paused ? "Resume" : "Pause", raceButton)) {
+                if (!paused) {
+                    paused = true;
+                    pauseBegan = now;
+                }
+                else {
+                    const double held = now - pauseBegan;
+                    countEnd += held;
+                    raceStart += held;
+                    paused = false;
+                }
+            }
+            ImGui::SameLine();
+        }
+        if (ImGui::Button("Reset", raceButton)) {
+            passage = BuildTypeRacerText(scriptWords, byLetters);
+            builtMode = scriptMode;
+            builtWords = scriptWords;
+            builtSig = letterSig;
+            cursor = 0;
+            paused = false;
+            resultLogged = false;
+            phase = Idle;
+        }
+    }
+}
+
+void DrawRaceCarPicker(float dpi) {
+    LoadRaceCars();
+    const float cardW = 210.0f * dpi;
+    const float imgH = cardW * (960.0f / 1280.0f);
+    const float gap = 14.0f * dpi;
+    const float labelH = ImGui::GetTextLineHeight() + 10.0f * dpi;
+    const float rowH = imgH + labelH + gap;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    float right = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - ImGui::GetStyle().WindowPadding.x;
+    if (ImGui::GetScrollMaxY() > 0.0f) right -= ImGui::GetStyle().ScrollbarSize;
+    const float innerW = std::max(cardW, right - origin.x);
+    float x = 0.0f;
+    float y = 0.0f;
+    for (int i = 0; i < kRaceCarCount; ++i) {
+        if (x > 0.0f && x + cardW > innerW) {
+            x = 0.0f;
+            y += rowH;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + x, origin.y + y));
+        ImGui::PushID(i);
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("pick", ImVec2(cardW, imgH + labelH));
+        if (ImGui::IsItemClicked()) gRaceCarIndex = i;
+        const bool selected = gRaceCarIndex == i;
+        const bool hovered = ImGui::IsItemHovered();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 imgMax(pos.x + cardW, pos.y + imgH);
+        dl->AddRectFilled(pos, imgMax, IM_COL32(255, 255, 255, 255), 8.0f);
+        if (gRaceCarTex[i] != 0) {
+            dl->AddImage((ImTextureID)(intptr_t)gRaceCarTex[i], pos, imgMax,
+                ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255));
+        }
+        const ImU32 border = selected ? IM_COL32(31, 111, 139, 255)
+            : (hovered ? IM_COL32(120, 150, 170, 255) : IM_COL32(190, 196, 204, 255));
+        dl->AddRect(pos, imgMax, border, 8.0f, 0, selected ? 3.0f : 1.5f);
+        const ImVec2 nameSize = ImGui::CalcTextSize(kRaceCars[i].name);
+        dl->AddText(ImVec2(pos.x + (cardW - nameSize.x) * 0.5f, pos.y + imgH + 4.0f * dpi),
+            IM_COL32(30, 40, 50, 255), kRaceCars[i].name);
+        ImGui::PopID();
+        x += cardW + gap;
+    }
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + y + imgH + labelH));
+    ImGui::Dummy(ImVec2(1.0f, 1.0f));
 }
 
 void UIManager::RenderUI() {
@@ -2984,19 +3736,404 @@ void UIManager::RenderUI() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    float leftColumnWidth = totalWidth * 0.25f;
     const ImGuiWindowFlags panelScrollFlags = ImGuiWindowFlags_HorizontalScrollbar;
+    const float railW = 46.0f * m_dpiScale;
 
-    // ==========================================
-    // LEFT PANEL: CONNECTION & GLOBAL SETTINGS
-    // ==========================================
-    ImGui::BeginChild("ControlPanel", ImVec2(leftColumnWidth, 0), true, panelScrollFlags);
+    ImGui::BeginChild("SideRail", ImVec2(railW, 0), true,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    {
+        const char* sideNames[3] = { "Board", "SSVEP", "Game" };
+        const char* sideIds[3] = { "##BoardTab", "##SSVEPTab", "##GameTab" };
+        const float gap = ImGui::GetStyle().ItemSpacing.y;
+        const float availH = ImGui::GetContentRegionAvail().y;
+        const float btnH = std::max(72.0f * m_dpiScale, (availH - gap * 2.0f) / 3.0f);
+        const float lineH = ImGui::GetTextLineHeight();
+        for (int tab = 0; tab < 3; ++tab) {
+            const bool selected = sideTab == tab;
+            if (selected) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.44f, 0.55f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.16f, 0.50f, 0.62f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.36f, 0.46f, 1.0f));
+            }
+            if (ImGui::Button(sideIds[tab], ImVec2(-1.0f, btnH))) sideTab = tab;
+            if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (selected) ImGui::PopStyleColor(3);
 
-    if (fonts.find(24) != fonts.end()) ImGui::PushFont(fonts[24]);
-    ImGui::Text("Device Connection");
-    if (fonts.find(24) != fonts.end()) ImGui::PopFont();
+            const ImVec2 rectMin = ImGui::GetItemRectMin();
+            const ImVec2 rectMax = ImGui::GetItemRectMax();
+            int letterCount = 0;
+            for (const char* p = sideNames[tab]; *p; ++p) ++letterCount;
+            float textY = rectMin.y + (rectMax.y - rectMin.y - letterCount * lineH) * 0.5f;
+            const ImU32 letterCol = selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(27, 58, 75, 255);
+            for (const char* p = sideNames[tab]; *p; ++p) {
+                char one[2] = { *p, '\0' };
+                const ImVec2 size = ImGui::CalcTextSize(one);
+                ImGui::GetWindowDrawList()->AddText(
+                    ImVec2(rectMin.x + (rectMax.x - rectMin.x - size.x) * 0.5f, textY),
+                    letterCol, one);
+                textY += lineH;
+            }
+        }
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    if (sideTab == 0) {
+        ImGui::BeginChild("BoardDrawer", ImVec2(0, 0), true, panelScrollFlags);
+        if (ImGui::BeginTabBar("BoardTabs")) {
+            if (ImGui::BeginTabItem("Impedance Check")) {
+            ImGui::Spacing();
+
+            if (isCheckingImpedance) {
+                if (ImGui::Button("Stop Checking", ImVec2(-1, 40))) {
+                    reqStopImpedanceCheck = true;
+                }
+            }
+            else {
+                ImGui::BeginDisabled(isConnected);
+                if (ImGui::Button("Check Impedance", ImVec2(-1, 40))) {
+                    reqImpedanceCheck = true;
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && isConnected) ImGui::SetTooltip("Disconnect the board first");
+                ImGui::EndDisabled();
+            }
+
+            ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+
+            // Calculate widths BEFORE initializing columns to keep layout boundaries stable
+            float leftColumnWidth = ImGui::GetContentRegionAvail().x * 0.60f;
+
+            // Initialize 2-Column Layout
+            ImGui::Columns(2, "ImpedanceColumns", false);
+            ImGui::SetColumnWidth(0, leftColumnWidth);
+
+            // ===================================
+            // COLUMN 1: 3D HEAD VIEWPORT
+            // ===================================
+            ImGui::BeginChild("HeadViewPanel", ImVec2(0, 0), true);
+
+            ImVec2 viewportSize = ImGui::GetContentRegionAvail();
+            headObject.Draw();
+
+            headObject.UpdateSubObjectScreenPositions(viewportSize, ImGui::GetItemRectMin());
+
+            struct PanelData {
+                int id;
+                bool isNew;
+                ImVec2 startPos;
+            };
+            static std::vector<PanelData> openPanels;
+
+            // NEW: Global focus restoration trigger flag
+            static bool pushPanelsToFront = false;
+
+            if (ImGui::IsMouseReleased(0) && ImGui::IsItemHovered() && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.0f)) {
+                ImVec2 mousePos = ImGui::GetMousePos();
+                float closestDistance = viewportSize.x * 0.05f;
+                int clickedID = -1;
+
+                for (const auto& obj : headObject.subObjects) {
+                    if (!obj.isSelectable) continue;
+
+                    float dx = mousePos.x - obj.screenPos.x;
+                    float dy = mousePos.y - obj.screenPos.y;
+                    float dist = sqrt(dx * dx + dy * dy);
+
+                    if (dist < closestDistance) {
+                        closestDistance = dist;
+                        clickedID = obj.id;
+                    }
+                }
+
+                if (clickedID != -1) {
+                    headObject.selectedObjectID = clickedID;
+
+                    bool alreadyOpen = false;
+                    for (const auto& panel : openPanels) {
+                        if (panel.id == clickedID) {
+                            alreadyOpen = true;
+                            break;
+                        }
+                    }
+
+                    if (!alreadyOpen) {
+                        openPanels.push_back({ clickedID, true, ImVec2(mousePos.x - 15, mousePos.y - 15) });
+                    }
+                }
+
+                // Whenever a click registers in the viewport, tell all panels to pop back to the top
+                pushPanelsToFront = true;
+            }
+
+            ImGui::EndChild();
+            ImGui::NextColumn();
+
+            // ===================================
+            // COLUMN 2: IMPEDANCE VALUE LIST
+            // ===================================
+            ImGui::BeginChild("ImpedanceListPanel", ImVec2(0, 0), true);
+            ImGui::TextUnformatted("Impedance");
+            ImGui::SameLine();
+            OpenMeaning("impedance",
+                "Green is snug, under 10 kOhm. Pale green is okay. Yellow and red are loose.");
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            const char* chanNames[5] = { "Channel 1", "Channel 2", "Channel 3", "Channel 4", "REF" };
+            for (int i = 0; i < 5; i++) {
+
+                // 1. Check if the current channel is active
+                bool isChannelOn = true;
+                if (i < 4) {
+                    // Unique hidden labels (##) keep the text invisible but functional
+                    char checkLabel[32];
+                    snprintf(checkLabel, sizeof(checkLabel), "##impedance_toggle_%d", i);
+
+                    ImGui::Checkbox(checkLabel, &eegChannels[i]);
+                    isChannelOn = eegChannels[i];
+                    ImGui::SameLine();
+                }
+                else {
+                    // Padding block for REF so its text and circle align perfectly with channels 1-4
+                    float checkWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x;
+                    ImGui::Dummy(ImVec2(checkWidth, 0));
+                    ImGui::SameLine();
+                }
+
+                // 2. Determine circle color based on ON/OFF state and impedance values
+                ImU32 col;
+                if (!isChannelOn) {
+                    col = IM_COL32(128, 128, 128, 255); // Neutral Gray for deactivated channels
+                }
+                else {
+                    col = IM_COL32(224, 56, 45, 255); // Default Red
+                    if (currentImpedances[i] <= 10)      col = IM_COL32(49, 113, 89, 255);
+                    else if (currentImpedances[i] <= 50) col = IM_COL32(184, 220, 105, 255);
+                    else if (currentImpedances[i] <= 100)col = IM_COL32(221, 178, 13, 255);
+                    else if (currentImpedances[i] <= 150)col = IM_COL32(253, 94, 52, 255);
+                }
+
+                // 3. Draw circle indicator centered vertically with the text line
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                float verticalCenter = ImGui::GetFrameHeight() * 0.5f;
+                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + (10 * m_dpiScale), p.y + verticalCenter), 8.0f * m_dpiScale, col);
+
+                ImGui::Dummy(ImVec2(25 * m_dpiScale, ImGui::GetFrameHeight()));
+                ImGui::SameLine();
+
+                // 4. Update the label conditionally
+                if (!isChannelOn) {
+                    ImGui::Text("%s: Off", chanNames[i]);
+                }
+                else {
+                    ImGui::Text("%s: %.1f k\xCE\xA9", chanNames[i], currentImpedances[i]);
+                    ImGui::SameLine();
+                    char badge[16];
+                    snprintf(badge, sizeof(badge), "[%s]", ImpedanceWord(currentImpedances[i], true));
+                    TextBoldColored(ImpedanceWordColor(currentImpedances[i], true), badge);
+                }
+
+                ImGui::Spacing(); ImGui::Spacing();
+            }
+            ImGui::EndChild();
+
+            // ===================================
+            // FLOATING COMPONENT INFO WINDOWS
+            // ===================================
+            for (auto it = openPanels.begin(); it != openPanels.end(); ) {
+                bool keepOpen = true;
+
+                const SubObject* targetObj = nullptr;
+                for (const auto& obj : headObject.subObjects) {
+                    if (obj.id == it->id) {
+                        targetObj = &obj;
+                        break;
+                    }
+                }
+
+                if (targetObj) {
+                    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysVerticalScrollbar;
+
+                    ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+                    // 1. Calculate Width (e.g., 12.5% of total screen width)
+                    float responsiveWidth = viewport->WorkSize.x * 0.125f;
+                    if (responsiveWidth < 220.0f) responsiveWidth = 220.0f;
+
+                    // NEW: 2. Calculate Height (e.g., 35% of total screen height)
+                    float responsiveHeight = viewport->WorkSize.y * 0.35f;
+                    if (responsiveHeight < 300.0f) responsiveHeight = 300.0f;
+
+                    // 3. Apply the limits on the very first frame
+                    if (it->isNew) {
+                        ImGui::SetNextWindowPos(it->startPos, ImGuiCond_Always);
+
+                        // Set the exact initial dimensions based on our responsive math
+                        ImGui::SetNextWindowSize(ImVec2(responsiveWidth, responsiveHeight), ImGuiCond_Always);
+
+                        it->isNew = false;
+                    }
+
+                    std::string windowLabel = targetObj->name + "###CompWindow_" + std::to_string(targetObj->id);
+
+                    ImGui::Begin(windowLabel.c_str(), &keepOpen, windowFlags);
+
+                    if (pushPanelsToFront) {
+                        ImGui::SetWindowFocus();
+                    }
+                    if (!ImGui::IsWindowCollapsed()) {
+
+                        float currentWidth = ImGui::GetWindowWidth();
+                        float fontScale = currentWidth / responsiveWidth;
+
+                        if (fontScale < 1.0f) fontScale = 1.0f;
+                        if (fontScale > 2.0f) fontScale = 2.0f;
+                        ImGui::SetWindowFontScale(fontScale);
+
+                        // ==================================================
+                        // 1. LIVE HARDWARE CONTROL & IMPEDANCE MAPPING (FIRST)
+                        // ==================================================
+                        // Map the 3D model node names to their corresponding array indices
+                        int chanIdx = -1;
+                        if (targetObj->name == "PO7")      chanIdx = 0;
+                        else if (targetObj->name == "O1") chanIdx = 1;
+                        else if (targetObj->name == "O2")  chanIdx = 2;
+                        else if (targetObj->name == "PO8")  chanIdx = 3;
+                        else if (targetObj->name == "A2")  chanIdx = 4;
+
+                        if (chanIdx != -1) {
+                            if (chanIdx != 4) {
+                                // 1. Interactive Checkbox (Synced with all other windows)
+
+                                char checkId[64];
+                                snprintf(checkId, sizeof(checkId), "##float_check_%d", chanIdx);
+
+                                ImGui::Checkbox(checkId, &eegChannels[chanIdx]);
+                                ImGui::SameLine();
+                                ImGui::Text("|");
+                                ImGui::SameLine();
+                            }
+
+                            // 2. Conditional Impedance Status Text & Color Matching
+                            
+                            if (chanIdx == 4 || eegChannels[chanIdx]) {
+                                const float imp = currentImpedances[chanIdx];
+                                const bool channelOn = chanIdx == 4 || eegChannels[chanIdx];
+                                if (chanIdx == 4) ImGui::Text("REF: %.1f k\xCE\xA9", imp);
+                                else ImGui::Text("Channel %d: %.1f k\xCE\xA9", chanIdx + 1, imp);
+                                ImGui::SameLine();
+                                char badge[16];
+                                snprintf(badge, sizeof(badge), "[%s]", ImpedanceWord(imp, channelOn));
+                                TextBoldColored(ImpedanceWordColor(imp, channelOn), badge);
+                            }
+                            else {
+                                ImGui::Text("Channel %d: Off", chanIdx + 1);
+                            }
+
+                            // Clear separator to divide the hardware row from the image below
+                            ImGui::Spacing();
+                            ImGui::Separator();
+                            ImGui::Spacing();
+                        }
+
+                        // ==================================================
+                        // 2. IMAGE RATIO PRESERVATION (SECOND)
+                        // ==================================================
+                        if (targetObj->textureID != 0) {
+                            // 1. Get exact available horizontal width in the user's resized panel
+                            float availWidth = ImGui::GetContentRegionAvail().x;
+                            float aspectRatio = 0.83f;
+
+                            // 3. Math ensures height perfectly matches the width context natively
+                            ImVec2 dynamicDisplaySize = ImVec2(availWidth, availWidth * aspectRatio);
+
+                            ImGui::Image((void*)(intptr_t)targetObj->textureID, dynamicDisplaySize);
+
+                            // Clear separator to divide the image from the description below
+                            ImGui::Spacing();
+                            ImGui::Separator();
+                            ImGui::Spacing();
+                        }
+
+                        // ==================================================
+                        // 3. DESCRIPTION (THIRD)
+                        // ==================================================
+                        ImGui::TextWrapped("%s", targetObj->description.c_str());
+
+                        ImGui::SetWindowFontScale(1.0f); // Reset
+                    }
+
+                    ImGui::End();
+                }
+
+                if (!keepOpen) {
+                    if (headObject.selectedObjectID == it->id) {
+                        headObject.selectedObjectID = -1;
+                    }
+                    it = openPanels.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+
+            if (pushPanelsToFront) {
+                pushPanelsToFront = false;
+            }
+
+            ImGui::Columns(1);
+            ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Connection")) {
+    const bool donglePresent = !availablePorts.empty() && availablePorts[0] != "No Dongle Found";
+    const float cardH = 150.0f * m_dpiScale;
+    const float cardGap = ImGui::GetStyle().ItemSpacing.x;
+    const float cardW = std::max(48.0f, (ImGui::GetContentRegionAvail().x - cardGap * 2.0f) / 3.0f);
+    const ImVec2 cards = ImGui::GetCursorScreenPos();
+    ImDrawList* pictureDraw = ImGui::GetWindowDrawList();
+    const ImVec2 dongleA = cards;
+    const ImVec2 dongleB(cards.x + cardW, cards.y + cardH);
+    pictureDraw->AddRectFilled(dongleA, dongleB, IM_COL32(244, 247, 248, 255), 12.0f * m_dpiScale);
+    pictureDraw->AddRect(dongleA, dongleB, donglePresent ? IM_COL32(31, 111, 139, 255) : IM_COL32(190, 198, 204, 255), 12.0f * m_dpiScale, 0, 2.0f);
+    DrawDonglePicture(pictureDraw, dongleA, dongleB, donglePresent);
+
+    ImGui::SetCursorScreenPos(ImVec2(cards.x + cardW + cardGap, cards.y));
+    ImGui::PushID("boardSwitch");
+    if (ImGui::InvisibleButton("##switch", ImVec2(cardW, cardH))) boardSwitchReady = !boardSwitchReady;
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    ImGui::PopID();
+    const ImVec2 switchA(cards.x + cardW + cardGap, cards.y);
+    const ImVec2 switchB(switchA.x + cardW, switchA.y + cardH);
+    pictureDraw->AddRectFilled(switchA, switchB, IM_COL32(244, 247, 248, 255), 12.0f * m_dpiScale);
+    pictureDraw->AddRect(switchA, switchB, boardSwitchReady ? IM_COL32(31, 111, 139, 255) : IM_COL32(190, 198, 204, 255), 12.0f * m_dpiScale, 0, 2.0f);
+    DrawSwitchPicture(pictureDraw, switchA, switchB, boardSwitchReady);
+
+    const bool ledSolid = isConnected;
+    const bool ledBlink = !ledSolid && std::fmod(glfwGetTime(), 1.0) < 0.45;
+    const ImVec2 ledA(cards.x + (cardW + cardGap) * 2.0f, cards.y);
+    const ImVec2 ledB(ledA.x + cardW, ledA.y + cardH);
+    pictureDraw->AddRectFilled(ledA, ledB, IM_COL32(244, 247, 248, 255), 12.0f * m_dpiScale);
+    pictureDraw->AddRect(ledA, ledB, ledSolid ? IM_COL32(70, 150, 255, 255) : IM_COL32(190, 198, 204, 255), 12.0f * m_dpiScale, 0, 2.0f);
+    DrawLedPicture(pictureDraw, ledA, ledB, ledSolid, ledBlink);
+
+    ImGui::SetCursorScreenPos(ImVec2(cards.x, cards.y + cardH + 8.0f * m_dpiScale));
+    OpenMeaning("connect",
+        "The first picture is the dongle in the computer. The middle picture is the board switch: click it when the board is on. The blue light blinks when the board is ready and stays on when this program is connected. If finding the board fails, unplug the dongle and plug it in again.");
     ImGui::Spacing();
 
+    if (isConnected) {
+        if (ImGui::Button("Disconnect", ImVec2(-1, 48.0f * m_dpiScale))) reqDisconnect = true;
+    }
+    else {
+        ImGui::BeginDisabled(isCheckingImpedance);
+        if (ImGui::Button("Find the board", ImVec2(-1, 48.0f * m_dpiScale))) reqConnect = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && isCheckingImpedance) {
+            ImGui::SetTooltip("Stop checking impedance first");
+        }
+        ImGui::EndDisabled();
+    }
+
+    if (ImGui::CollapsingHeader("Port and address")) {
     ImGui::Text("MAC");
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
@@ -3081,64 +4218,36 @@ void UIManager::RenderUI() {
         UpdateAvailablePorts();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rescan system serial channels");
-
-    ImGui::Spacing();
-
-    // Connect Button
-    if (isConnected) {
-        if (ImGui::Button("Disconnect", ImVec2(-1, 40))) {
-            reqDisconnect = true;
-        }
     }
-    else {
-        ImGui::BeginDisabled(isCheckingImpedance);
-        if (ImGui::Button("Connect", ImVec2(-1, 40))) {
-            reqConnect = true;
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && isCheckingImpedance) ImGui::SetTooltip("Stop checking impedance first");
-        ImGui::EndDisabled();
+        ImGui::EndChild();
     }
-
-    ImGui::EndChild();
-    ImGui::SameLine();
-
-    // ==========================================
-    // RIGHT PANEL: TABS & DATA
-    // ==========================================
+    else if (sideTab == 1) {
     ImGui::BeginChild("DataPanel", ImVec2(0, 0), true, panelScrollFlags);
 
-    if (ImGui::BeginTabBar("DataTabs")) {
+    DrawLessonNav(lessonStep, m_dpiScale);
+    if (lessonStep == 0) {
+        if (DrawLessonChoice("Lines##wavesView", "Lines", wavesView == 0, m_dpiScale)) wavesView = 0;
+        ImGui::SameLine();
+        if (DrawLessonChoice("Bands##wavesView", "Bands", wavesView == 1, m_dpiScale)) wavesView = 1;
+    }
+    else if (lessonStep == 1) {
+        if (DrawLessonChoice("Boards##lightsView", "Boards", lightsView == 0, m_dpiScale)) lightsView = 0;
+        ImGui::SameLine();
+        if (DrawLessonChoice("Calibrate##lightsView", "Calibrate", lightsView == 1, m_dpiScale)) lightsView = 1;
+    }
 
-        // ------------------------------------------
-        // TAB: SSVEP
-        // ------------------------------------------
-        if (ImGui::BeginTabItem("SSVEP")) {
-            if (ImGui::BeginTabBar("SSVEPSubTabs")) {
-
-                // ------------------------------------------
-                // SUBTAB: Signal (default)
-                // ------------------------------------------
-                if (ImGui::BeginTabItem("Signal")) {
+    if (lessonStep == 0 && wavesView == 0) {
                     signalTabActive.store(true);
-                    ImVec2 avail = ImGui::GetContentRegionAvail();
-                    const float spacing = ImGui::GetStyle().ItemSpacing.y;
-                    const float topH = std::max(0.0f, (avail.y - spacing) * 0.60f);
-
-                    ImGui::BeginChild("SSVEPSignalTopPanel", ImVec2(0.0f, topH), true, panelScrollFlags);
+                    ImGui::BeginChild("SSVEPSignalTopPanel", ImVec2(0.0f, 0.0f), true, panelScrollFlags);
                     DrawSignalEEGPanel();
                     ImGui::EndChild();
+    }
 
-                    ImGui::BeginChild("SSVEPSignalBottomPanel", ImVec2(0.0f, 0.0f), true, panelScrollFlags);
-                    DrawSignalSpectrumPanel();
-                    ImGui::EndChild();
-
-                    ImGui::EndTabItem();
-                }
-
-                // ------------------------------------------
-                // SUBTAB: HUD (existing SSVEP controls)
-                // ------------------------------------------
-                if (ImGui::BeginTabItem("HUD")) {
+                if (lessonStep == 1 && lightsView == 0) {
             ImVec2 avail = ImGui::GetContentRegionAvail();
             const float spacing = ImGui::GetStyle().ItemSpacing.y;
             const float bottomH = avail.y * 0.10f;
@@ -3282,343 +4391,29 @@ void UIManager::RenderUI() {
                 }
             }
             ImGui::EndChild();
-
-            ImGui::EndTabItem();
                 }
 
-                if (ImGui::BeginTabItem("Calibration")) {
+                if (lessonStep == 1 && lightsView == 1) {
                     DrawSSVEPCalibrationTab(SSVEPBoardLayout, m_dpiScale, isConnected, SSVEPCalibration, window,
                         patternTex, patternInvTex, SSVEPKeyFont, *this);
-                    ImGui::EndTabItem();
                 }
 
-                ImGui::EndTabBar();
-            }
-
-            ImGui::EndTabItem();
-        }
-
-        // ------------------------------------------
-        // TAB: IMPEDANCE CHECK
-        // ------------------------------------------
-        if (ImGui::BeginTabItem("Impedance Check")) {
+        if (lessonStep == 0 && wavesView == 1) {
+            signalTabActive.store(true);
             ImGui::Spacing();
 
-            if (isCheckingImpedance) {
-                if (ImGui::Button("Stop Checking", ImVec2(-1, 40))) {
-                    reqStopImpedanceCheck = true;
-                }
-            }
-            else {
-                ImGui::BeginDisabled(isConnected);
-                if (ImGui::Button("Check Impedance", ImVec2(-1, 40))) {
-                    reqImpedanceCheck = true;
-                }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && isConnected) ImGui::SetTooltip("Disconnect the board first");
-                ImGui::EndDisabled();
-            }
-
-            ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-
-            // Calculate widths BEFORE initializing columns to keep layout boundaries stable
-            float leftColumnWidth = ImGui::GetContentRegionAvail().x * 0.60f;
-
-            // Initialize 2-Column Layout
-            ImGui::Columns(2, "ImpedanceColumns", false);
-            ImGui::SetColumnWidth(0, leftColumnWidth);
-
-            // ===================================
-            // COLUMN 1: 3D HEAD VIEWPORT
-            // ===================================
-            ImGui::BeginChild("HeadViewPanel", ImVec2(0, 0), true);
-
-            ImVec2 viewportSize = ImGui::GetContentRegionAvail();
-            headObject.Draw();
-
-            headObject.UpdateSubObjectScreenPositions(viewportSize, ImGui::GetItemRectMin());
-
-            struct PanelData {
-                int id;
-                bool isNew;
-                ImVec2 startPos;
-            };
-            static std::vector<PanelData> openPanels;
-
-            // NEW: Global focus restoration trigger flag
-            static bool pushPanelsToFront = false;
-
-            if (ImGui::IsMouseReleased(0) && ImGui::IsItemHovered() && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.0f)) {
-                ImVec2 mousePos = ImGui::GetMousePos();
-                float closestDistance = viewportSize.x * 0.05f;
-                int clickedID = -1;
-
-                for (const auto& obj : headObject.subObjects) {
-                    if (!obj.isSelectable) continue;
-
-                    float dx = mousePos.x - obj.screenPos.x;
-                    float dy = mousePos.y - obj.screenPos.y;
-                    float dist = sqrt(dx * dx + dy * dy);
-
-                    if (dist < closestDistance) {
-                        closestDistance = dist;
-                        clickedID = obj.id;
-                    }
-                }
-
-                if (clickedID != -1) {
-                    headObject.selectedObjectID = clickedID;
-
-                    bool alreadyOpen = false;
-                    for (const auto& panel : openPanels) {
-                        if (panel.id == clickedID) {
-                            alreadyOpen = true;
-                            break;
-                        }
-                    }
-
-                    if (!alreadyOpen) {
-                        openPanels.push_back({ clickedID, true, ImVec2(mousePos.x - 15, mousePos.y - 15) });
-                    }
-                }
-
-                // Whenever a click registers in the viewport, tell all panels to pop back to the top
-                pushPanelsToFront = true;
-            }
-
-            ImGui::EndChild();
-            ImGui::NextColumn();
-
-            // ===================================
-            // COLUMN 2: IMPEDANCE VALUE LIST
-            // ===================================
-            ImGui::BeginChild("ImpedanceListPanel", ImVec2(0, 0), true);
-            ImGui::Text("Electrode Status");
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            const char* chanNames[5] = { "1", "2", "3", "4", "REF" };
-            for (int i = 0; i < 5; i++) {
-
-                // 1. Check if the current channel is active
-                bool isChannelOn = true;
-                if (i < 4) {
-                    // Unique hidden labels (##) keep the text invisible but functional
-                    char checkLabel[32];
-                    snprintf(checkLabel, sizeof(checkLabel), "##impedance_toggle_%d", i);
-
-                    ImGui::Checkbox(checkLabel, &eegChannels[i]);
-                    isChannelOn = eegChannels[i];
-                    ImGui::SameLine();
-                }
-                else {
-                    // Padding block for REF so its text and circle align perfectly with channels 1-4
-                    float checkWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x;
-                    ImGui::Dummy(ImVec2(checkWidth, 0));
-                    ImGui::SameLine();
-                }
-
-                // 2. Determine circle color based on ON/OFF state and impedance values
-                ImU32 col;
-                if (!isChannelOn) {
-                    col = IM_COL32(128, 128, 128, 255); // Neutral Gray for deactivated channels
-                }
-                else {
-                    col = IM_COL32(224, 56, 45, 255); // Default Red
-                    if (currentImpedances[i] <= 10)      col = IM_COL32(49, 113, 89, 255);
-                    else if (currentImpedances[i] <= 50) col = IM_COL32(184, 220, 105, 255);
-                    else if (currentImpedances[i] <= 100)col = IM_COL32(221, 178, 13, 255);
-                    else if (currentImpedances[i] <= 150)col = IM_COL32(253, 94, 52, 255);
-                }
-
-                // 3. Draw circle indicator centered vertically with the text line
-                ImVec2 p = ImGui::GetCursorScreenPos();
-                float verticalCenter = ImGui::GetFrameHeight() * 0.5f;
-                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + (10 * m_dpiScale), p.y + verticalCenter), 8.0f * m_dpiScale, col);
-
-                ImGui::Dummy(ImVec2(25 * m_dpiScale, ImGui::GetFrameHeight()));
-                ImGui::SameLine();
-
-                // 4. Update the label conditionally
-                if (!isChannelOn) {
-                    ImGui::Text("Channel %s: OFF", chanNames[i]);
-                }
-                else {
-                    ImGui::Text("Channel %s: %.1f kΩ", chanNames[i], currentImpedances[i]);
-                }
-
-                ImGui::Spacing(); ImGui::Spacing();
-            }
-            ImGui::EndChild();
-
-            // ===================================
-            // FLOATING COMPONENT INFO WINDOWS
-            // ===================================
-            for (auto it = openPanels.begin(); it != openPanels.end(); ) {
-                bool keepOpen = true;
-
-                const SubObject* targetObj = nullptr;
-                for (const auto& obj : headObject.subObjects) {
-                    if (obj.id == it->id) {
-                        targetObj = &obj;
-                        break;
-                    }
-                }
-
-                if (targetObj) {
-                    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysVerticalScrollbar;
-
-                    ImGuiViewport* viewport = ImGui::GetMainViewport();
-
-                    // 1. Calculate Width (e.g., 12.5% of total screen width)
-                    float responsiveWidth = viewport->WorkSize.x * 0.125f;
-                    if (responsiveWidth < 220.0f) responsiveWidth = 220.0f;
-
-                    // NEW: 2. Calculate Height (e.g., 35% of total screen height)
-                    float responsiveHeight = viewport->WorkSize.y * 0.35f;
-                    if (responsiveHeight < 300.0f) responsiveHeight = 300.0f;
-
-                    // 3. Apply the limits on the very first frame
-                    if (it->isNew) {
-                        ImGui::SetNextWindowPos(it->startPos, ImGuiCond_Always);
-
-                        // Set the exact initial dimensions based on our responsive math
-                        ImGui::SetNextWindowSize(ImVec2(responsiveWidth, responsiveHeight), ImGuiCond_Always);
-
-                        it->isNew = false;
-                    }
-
-                    std::string windowLabel = targetObj->name + "###CompWindow_" + std::to_string(targetObj->id);
-
-                    ImGui::Begin(windowLabel.c_str(), &keepOpen, windowFlags);
-
-                    if (pushPanelsToFront) {
-                        ImGui::SetWindowFocus();
-                    }
-                    if (!ImGui::IsWindowCollapsed()) {
-
-                        float currentWidth = ImGui::GetWindowWidth();
-                        float fontScale = currentWidth / responsiveWidth;
-
-                        if (fontScale < 1.0f) fontScale = 1.0f;
-                        if (fontScale > 2.0f) fontScale = 2.0f;
-                        ImGui::SetWindowFontScale(fontScale);
-
-                        // ==================================================
-                        // 1. LIVE HARDWARE CONTROL & IMPEDANCE MAPPING (FIRST)
-                        // ==================================================
-                        // Map the 3D model node names to their corresponding array indices
-                        int chanIdx = -1;
-                        if (targetObj->name == "PO7")      chanIdx = 0;
-                        else if (targetObj->name == "O1") chanIdx = 1;
-                        else if (targetObj->name == "O2")  chanIdx = 2;
-                        else if (targetObj->name == "PO8")  chanIdx = 3;
-                        else if (targetObj->name == "A2")  chanIdx = 4;
-
-                        if (chanIdx != -1) {
-                            if (chanIdx != 4) {
-                                // 1. Interactive Checkbox (Synced with all other windows)
-
-                                char checkId[64];
-                                snprintf(checkId, sizeof(checkId), "##float_check_%d", chanIdx);
-
-                                ImGui::Checkbox(checkId, &eegChannels[chanIdx]);
-                                ImGui::SameLine();
-                                ImGui::Text("|");
-                                ImGui::SameLine();
-                            }
-
-                            // 2. Conditional Impedance Status Text & Color Matching
-                            
-                            if (chanIdx == 4 || eegChannels[chanIdx]) {
-                                // Channel is active, match the exact color spectrum from your list panel
-                                float imp = currentImpedances[chanIdx];
-                                ImVec4 statusColor = ImVec4(224.0f / 255.0f, 56.0f / 255.0f, 45.0f / 255.0f, 1.0f);
-
-                                if (imp <= 10)       statusColor = ImVec4(49.0f / 255.0f, 113.0f / 255.0f, 89.0f / 255.0f, 1.0f);
-                                else if (imp <= 50)  statusColor = ImVec4(184.0f / 255.0f, 220.0f / 255.0f, 105.0f / 255.0f, 1.0f);
-                                else if (imp <= 100) statusColor = ImVec4(221.0f / 255.0f, 178.0f / 255.0f, 13.0f / 255.0f, 1.0f);
-                                else if (imp <= 150) statusColor = ImVec4(253.0f / 255.0f, 94.0f / 255.0f, 52.0f / 255.0f, 1.0f);
-
-                                ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Impedance:");
-                                ImGui::SameLine();
-                                ImGui::TextColored(statusColor, "%.1f kΩ", imp);
-                            }
-                            else {
-                                // Channel is deactivated
-                                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Status: OFF");
-                            }
-
-                            // Clear separator to divide the hardware row from the image below
-                            ImGui::Spacing();
-                            ImGui::Separator();
-                            ImGui::Spacing();
-                        }
-
-                        // ==================================================
-                        // 2. IMAGE RATIO PRESERVATION (SECOND)
-                        // ==================================================
-                        if (targetObj->textureID != 0) {
-                            // 1. Get exact available horizontal width in the user's resized panel
-                            float availWidth = ImGui::GetContentRegionAvail().x;
-                            float aspectRatio = 0.83f;
-
-                            // 3. Math ensures height perfectly matches the width context natively
-                            ImVec2 dynamicDisplaySize = ImVec2(availWidth, availWidth * aspectRatio);
-
-                            ImGui::Image((void*)(intptr_t)targetObj->textureID, dynamicDisplaySize);
-
-                            // Clear separator to divide the image from the description below
-                            ImGui::Spacing();
-                            ImGui::Separator();
-                            ImGui::Spacing();
-                        }
-
-                        // ==================================================
-                        // 3. DESCRIPTION (THIRD)
-                        // ==================================================
-                        ImGui::TextWrapped("%s", targetObj->description.c_str());
-
-                        ImGui::SetWindowFontScale(1.0f); // Reset
-                    }
-
-                    ImGui::End();
-                }
-
-                if (!keepOpen) {
-                    if (headObject.selectedObjectID == it->id) {
-                        headObject.selectedObjectID = -1;
-                    }
-                    it = openPanels.erase(it);
-                }
-                else {
-                    ++it;
-                }
-            }
-
-            if (pushPanelsToFront) {
-                pushPanelsToFront = false;
-            }
-
-            ImGui::Columns(1);
-            ImGui::EndTabItem();
-        }
-
-        // ------------------------------------------
-        // TAB 2: BAND POWER
-        // ------------------------------------------
-        if (ImGui::BeginTabItem("Band Power")) {
-            ImGui::Spacing();
-
-            const char* waves[] = { "Delta", "Theta", "Alpha", "Beta", "Gamma" };
+            const char* waves[] = { "Deep sleep", "Drowsy", "Calm", "Busy", "Fast" };
             for (int i = 0; i < 5; i++) {
                 ImGui::Checkbox(waves[i], &selectedWaves[i]);
                 if (i < 4) ImGui::SameLine();
             }
+            ImGui::SameLine();
+            OpenMeaning("bands",
+                "Deep sleep, drowsy, calm, busy, and fast are the five usual brain-wave bands. Close your eyes and watch the calm bar grow.");
             ImGui::Spacing();
 
-            // Setup Bar Chart Layout (Top Half)
-            if (ImPlot::BeginPlot("Current Band Powers", ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.5f))) {
-                ImPlot::SetupAxes("Brainwave Type", "Band Power", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_None);
+            if (ImPlot::BeginPlot("##Current Band Powers", ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.5f))) {
+                ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_None);
                 ImPlot::SetupAxesLimits(-0.5, 4.5, 0, 1, ImPlotCond_Always);
                 
                 // Colors for bars: blue, cyan, green, orange, red
@@ -3647,15 +4442,34 @@ void UIManager::RenderUI() {
                     }
                 }
                 ImPlot::EndPlot();
-                //std::cout << "\n";
             }
-
-            ImGui::EndTabItem();
         }
 
-        ImGui::EndTabBar();
-    }
+        if (lessonStep == 2) {
+            signalTabActive.store(true);
+            ImGui::BeginChild("SSVEPSignalBottomPanel", ImVec2(0.0f, 0.0f), true, panelScrollFlags);
+            DrawSignalSpectrumPanel();
+            ImGui::EndChild();
+        }
     ImGui::EndChild();
+    }
+    else {
+        ImGui::BeginChild("GamePanel", ImVec2(0, 0), true, panelScrollFlags);
+        if (GameFont) ImGui::PushFont(GameFont);
+        if (ImGui::BeginTabBar("GameTabs")) {
+            if (ImGui::BeginTabItem("TypeRacer")) {
+                DrawTypeRacer(m_dpiScale, GameFont);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Racecar")) {
+                DrawRaceCarPicker(m_dpiScale);
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        if (GameFont) ImGui::PopFont();
+        ImGui::EndChild();
+    }
 
     // 1. Check if main.cpp told us to show the popup
     if (showPortErrorPopup) {
@@ -3670,12 +4484,10 @@ void UIManager::RenderUI() {
     if (ImGui::BeginPopupModal("Connection Error", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
 
         // Warning Icon and text
-        ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "CRITICAL CONNECTION FAILURE");
+        ImGui::TextUnformatted("Unplug the dongle and plug it in again.");
         ImGui::Separator();
         ImGui::Spacing();
-        ImGui::Text("%s", portErrorMessage.c_str());
-        ImGui::Spacing();
-        ImGui::Text("Please ensure the port is correct and not used by another application.");
+        ImGui::TextWrapped("%s", portErrorMessage.c_str());
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
         // Centered OK Button

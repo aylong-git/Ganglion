@@ -101,6 +101,13 @@ public:
     bool SSVEPPreviewEnabled = false;
     bool SSVEPCalibTestOpen = false;
     bool SSVEPTestMode = false;
+    // 0 Waves, 1 Lights, 2 Score.
+    int lessonStep = 0;
+    // 0 Board, 1 SSVEP, 2 Game.
+    int sideTab = 0;
+    bool boardSwitchReady = false;
+    int wavesView = 0;
+    int lightsView = 0;
     int SSVEPTestSeq[12] = {};
     int SSVEPTestSeqLen = 0;
     int SSVEPTestIndex = 0;
@@ -108,6 +115,7 @@ public:
     bool SSVEPTestDone = false;
     bool SSVEPTestHit[12] = {};
     ImFont* SSVEPKeyFont = nullptr;
+    ImFont* GameFont = nullptr;
     SSVEPBoardLayout SSVEPBoardLayout;
     bool SSVEPBoardLayoutInit = false;
     CalibrationSession SSVEPCalibration;
