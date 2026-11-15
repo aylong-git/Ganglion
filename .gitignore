@@ -3,6 +3,11 @@
 /out/
 /bin/
 
+# vcpkg is installed on each machine by build.sh / build.bat.
+# vcpkg.json is the dependency list and stays in git.
+/vcpkg/
+/vcpkg_installed/
+
 # ImGui window state
 imgui.ini
 
