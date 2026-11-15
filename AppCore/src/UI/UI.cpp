@@ -7,12 +7,17 @@
 #endif
 #include <windows.h>
 #include <shobjidl.h>
+#include <setupapi.h>
+#include <devguid.h>
+#pragma comment(lib, "setupapi.lib")
 
+#elif defined(__APPLE__)
+#include <IOKit/IOKitLib.h>
+#include <IOKit/serial/IOSerialKeys.h>
+#include <CoreFoundation/CoreFoundation.h>
 #endif
 
 #include <glad/glad.h>
-#include <setupapi.h>
-#include <devguid.h>
 #include "UI.h"
 #include "implot.h"
 #include "Utils.h"
@@ -39,8 +44,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#pragma comment(lib, "setupapi.lib")
 
 void UIManager::UpdateAvailablePorts() {
     availablePorts.clear();
@@ -126,7 +129,7 @@ void UIManager::UpdateAvailablePorts() {
                 }
                 IOObjectRelease(device);
             }
-            IOIteratorRelease(iter);
+            IOObjectRelease(iter);
         }
     }
 
@@ -172,12 +175,7 @@ UIManager::UIManager() : window(nullptr) {
     std::filesystem::path defaultPath =
         std::filesystem::absolute("../../recordings").lexically_normal();
 
-    strncpy_s(
-        recordDirectory,
-        sizeof(recordDirectory),
-        defaultPath.string().c_str(),
-        _TRUNCATE
-    );
+    std::snprintf(recordDirectory, sizeof(recordDirectory), "%s", defaultPath.string().c_str());
 
 }
 
@@ -224,6 +222,9 @@ bool UIManager::Initialize() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
 
     // 2. Create the Window
     window = glfwCreateWindow(1280, 720, "Ganglion SSVEP", nullptr, nullptr);
@@ -247,6 +248,14 @@ bool UIManager::Initialize() {
     // Clamp to avoid absurdly large UI on tiny screens (optional, but safe)
     if (scaleFactor < 1.0f) scaleFactor = 1.0f;
     if (scaleFactor > 3.0f) scaleFactor = 3.0f;
+
+#ifdef __APPLE__
+    // Window coordinates are already points. Content scale is only the Retina
+    // pixel density (usually 2), so using it as the UI scale draws a window
+    // larger than the display. Fonts stay at the design size here; the monitor
+    // fit below scales them to the usable screen.
+    scaleFactor = 1.0f;
+#endif
 
 
     IMGUI_CHECKVERSION();
@@ -301,7 +310,19 @@ bool UIManager::Initialize() {
     }
 
     ImGui::GetStyle().ScaleAllSizes(scaleFactor);
-    glfwSetWindowSize(window, 1280 * scaleFactor, 720 * scaleFactor);
+#ifdef __APPLE__
+    if (GLFWmonitor* monitor = glfwGetPrimaryMonitor()) {
+        int areaX = 0, areaY = 0, areaW = 0, areaH = 0;
+        glfwGetMonitorWorkarea(monitor, &areaX, &areaY, &areaW, &areaH);
+        if (areaW > 0 && areaH > 0) {
+            // Work area is the resolution you chose, minus the menu bar and Dock.
+            glfwSetWindowSize(window, areaW, areaH);
+            glfwSetWindowPos(window, areaX, areaY);
+        }
+    }
+#else
+    glfwSetWindowSize(window, static_cast<int>(1280.0f * scaleFactor), static_cast<int>(720.0f * scaleFactor));
+#endif
 
     // 5. Apply Theme
     SetupCustomTheme();
@@ -2341,9 +2362,7 @@ std::string BuildCsvPath(std::string dir, std::string file) {
     }
 
     if (dir.empty()) return file;
-    const char last = dir.back();
-    if (last != '\\' && last != '/') dir += '\\';
-    return dir + file;
+    return (std::filesystem::path(dir) / file).string();
 }
 
 std::string UIManager::GetFullRecordPath() const {
@@ -3692,7 +3711,38 @@ void DrawRaceCarPicker(float dpi) {
     ImGui::Dummy(ImVec2(1.0f, 1.0f));
 }
 
+#ifdef __APPLE__
+// Layout is designed at 1280x720. Scale it to the current window, which opens
+// at the monitor work area, so a larger or higher-resolution screen gets a
+// larger interface and a smaller window keeps every part on screen.
+void FitAppleLayoutToWindow(GLFWwindow* window, float& dpiScale) {
+    static ImGuiStyle baseStyle;
+    static bool haveBase = false;
+    if (!haveBase) {
+        baseStyle = ImGui::GetStyle();
+        haveBase = true;
+    }
+
+    int w = 0, h = 0;
+    if (window) glfwGetWindowSize(window, &w, &h);
+    float fit = 1.0f;
+    if (w > 0 && h > 0) {
+        fit = std::min(static_cast<float>(w) / 1280.0f, static_cast<float>(h) / 720.0f);
+        fit = std::clamp(fit, 0.6f, 2.5f);
+    }
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style = baseStyle;
+    if (fit != 1.0f) style.ScaleAllSizes(fit);
+    style.FontScaleMain = fit;
+    dpiScale = fit;
+}
+#endif
+
 void UIManager::RenderUI() {
+#ifdef __APPLE__
+    FitAppleLayoutToWindow(window, m_dpiScale);
+#endif
     const int refresh = monitorRefreshHz.load();
 
     unsigned int patternTex = 0;
