@@ -27,7 +27,7 @@ public:
     void Cleanup();
     ImVec4 ColorConvertU32ToFloat4(ImU32 in);
 
-    // Connection Panel
+    // Checklist panel
     char macParts[6][3] = { "", "", "", "", "", "" };
     char macAddress[18] = "";
     unsigned int macHelpTextureID = 0;

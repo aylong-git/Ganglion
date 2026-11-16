@@ -2699,8 +2699,6 @@ void UIManager::DrawCalibrationSavePopup() {
     ImGui::End();
 }
 
-bool OpenMeaning(const char* id, const char* body);
-
 void UIManager::DrawSignalEEGPanel() {
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float recBtnW = 120.0f * m_dpiScale;
@@ -2725,9 +2723,6 @@ void UIManager::DrawSignalEEGPanel() {
         }
         ImGui::PopStyleColor(3);
     }
-    ImGui::SameLine();
-    OpenMeaning("waves",
-        "The numbers on the line are microvolts. A taller line is a bigger signal. The time window stays five seconds wide.");
 
     EEGPlotSnapshot snap;
     {
@@ -2949,45 +2944,6 @@ void DrawSSVEPScoreGraph(const SSVEPDetectSnapshot& snap) {
     }
 }
 
-void TextBoldColored(const ImVec4& color, const char* text) {
-    const ImVec2 pos = ImGui::GetCursorScreenPos();
-    const ImU32 col = ImGui::ColorConvertFloat4ToU32(color);
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    draw->AddText(pos, col, text);
-    draw->AddText(ImVec2(pos.x + 0.7f, pos.y), col, text);
-    const ImVec2 size = ImGui::CalcTextSize(text);
-    ImGui::Dummy(ImVec2(size.x + 0.7f, size.y));
-}
-
-const char* ImpedanceWord(float kiloOhms, bool on) {
-    if (!on) return "Off";
-    if (kiloOhms <= 10.0f) return "Snug";
-    if (kiloOhms <= 50.0f) return "Okay";
-    return "Loose";
-}
-
-ImVec4 ImpedanceWordColor(float kiloOhms, bool on) {
-    if (!on) return ImVec4(0.50f, 0.50f, 0.50f, 1.0f);
-    if (kiloOhms <= 10.0f) return ImVec4(49.0f / 255.0f, 113.0f / 255.0f, 89.0f / 255.0f, 1.0f);
-    if (kiloOhms <= 50.0f) return ImVec4(184.0f / 255.0f, 220.0f / 255.0f, 105.0f / 255.0f, 1.0f);
-    if (kiloOhms <= 100.0f) return ImVec4(221.0f / 255.0f, 178.0f / 255.0f, 13.0f / 255.0f, 1.0f);
-    return ImVec4(224.0f / 255.0f, 56.0f / 255.0f, 45.0f / 255.0f, 1.0f);
-}
-
-bool OpenMeaning(const char* id, const char* body) {
-    ImGui::PushID(id);
-    const bool pressed = ImGui::Button("?");
-    if (pressed) ImGui::OpenPopup("meaning");
-    if (ImGui::BeginPopup("meaning")) {
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-        ImGui::TextUnformatted(body);
-        ImGui::PopTextWrapPos();
-        ImGui::EndPopup();
-    }
-    ImGui::PopID();
-    return pressed;
-}
-
 void DrawDonglePicture(ImDrawList* draw, ImVec2 a, ImVec2 b, bool present) {
     const ImU32 ink = present ? IM_COL32(31, 111, 139, 255) : IM_COL32(176, 186, 192, 255);
     const float w = b.x - a.x;
@@ -3035,6 +2991,41 @@ void DrawLedPicture(ImDrawList* draw, ImVec2 a, ImVec2 b, bool solid, bool lit) 
         h * 0.04f);
     const ImU32 led = (solid || lit) ? IM_COL32(70, 150, 255, 255) : IM_COL32(30, 48, 70, 255);
     draw->AddCircleFilled(ImVec2(a.x + w * 0.50f, a.y + h * 0.48f), h * 0.10f, led);
+}
+
+void BeginChecklistStep(const char* id, int step, const char* instruction, float dpi, ImFont* stepFont, float width) {
+    ImGui::PushID(id);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f * dpi);
+    ImGui::BeginChild("##panel", ImVec2(width, 0.0f),
+        ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysAutoResize);
+    char stepLabel[32];
+    snprintf(stepLabel, sizeof(stepLabel), "Step %d.", step);
+    ImGui::PushFont(stepFont, ImGui::GetStyle().FontSizeBase * 1.75f);
+    ImGui::TextUnformatted(stepLabel);
+    ImGui::PopFont();
+    ImGui::TextWrapped("%s", instruction);
+    ImGui::Spacing();
+}
+
+void EndChecklistStep(bool besideNext) {
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopID();
+    if (besideNext) ImGui::SameLine();
+    else ImGui::Spacing();
+}
+
+ImVec2 ChecklistPictureSize(float dpi) {
+    const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float h = std::max(88.0f * dpi, std::min(avail * 0.72f, 140.0f * dpi));
+    return ImVec2(avail, h);
+}
+
+void DrawChecklistCard(ImDrawList* draw, ImVec2 a, ImVec2 b, bool ready, float dpi) {
+    draw->AddRectFilled(a, b, IM_COL32(244, 247, 248, 255), 12.0f * dpi);
+    draw->AddRect(a, b,
+        ready ? IM_COL32(31, 111, 139, 255) : IM_COL32(190, 198, 204, 255),
+        12.0f * dpi, 0, 2.0f);
 }
 
 void DrawLessonNav(int& step, float dpi) {
@@ -3831,7 +3822,13 @@ void UIManager::RenderUI() {
     if (sideTab == 0) {
         ImGui::BeginChild("BoardDrawer", ImVec2(0, 0), true, panelScrollFlags);
         if (ImGui::BeginTabBar("BoardTabs")) {
-            if (ImGui::BeginTabItem("Impedance Check")) {
+            static bool selectChecklist = true;
+            static bool openImpedanceTab = false;
+            const ImGuiTabItemFlags checklistFlags = selectChecklist ? ImGuiTabItemFlags_SetSelected : 0;
+            const ImGuiTabItemFlags impedanceFlags = openImpedanceTab ? ImGuiTabItemFlags_SetSelected : 0;
+            if (selectChecklist) selectChecklist = false;
+            if (openImpedanceTab) openImpedanceTab = false;
+            if (ImGui::BeginTabItem("Impedance Check", nullptr, impedanceFlags)) {
             ImGui::Spacing();
 
             if (isCheckingImpedance) {
@@ -3923,9 +3920,6 @@ void UIManager::RenderUI() {
             // ===================================
             ImGui::BeginChild("ImpedanceListPanel", ImVec2(0, 0), true);
             ImGui::TextUnformatted("Impedance");
-            ImGui::SameLine();
-            OpenMeaning("impedance",
-                "Green is snug, under 10 kOhm. Pale green is okay. Yellow and red are loose.");
             ImGui::Separator();
             ImGui::Spacing();
 
@@ -3977,10 +3971,6 @@ void UIManager::RenderUI() {
                 }
                 else {
                     ImGui::Text("%s: %.1f k\xCE\xA9", chanNames[i], currentImpedances[i]);
-                    ImGui::SameLine();
-                    char badge[16];
-                    snprintf(badge, sizeof(badge), "[%s]", ImpedanceWord(currentImpedances[i], true));
-                    TextBoldColored(ImpedanceWordColor(currentImpedances[i], true), badge);
                 }
 
                 ImGui::Spacing(); ImGui::Spacing();
@@ -4068,13 +4058,8 @@ void UIManager::RenderUI() {
                             
                             if (chanIdx == 4 || eegChannels[chanIdx]) {
                                 const float imp = currentImpedances[chanIdx];
-                                const bool channelOn = chanIdx == 4 || eegChannels[chanIdx];
                                 if (chanIdx == 4) ImGui::Text("REF: %.1f k\xCE\xA9", imp);
                                 else ImGui::Text("Channel %d: %.1f k\xCE\xA9", chanIdx + 1, imp);
-                                ImGui::SameLine();
-                                char badge[16];
-                                snprintf(badge, sizeof(badge), "[%s]", ImpedanceWord(imp, channelOn));
-                                TextBoldColored(ImpedanceWordColor(imp, channelOn), badge);
                             }
                             else {
                                 ImGui::Text("Channel %d: Off", chanIdx + 1);
@@ -4134,141 +4119,187 @@ void UIManager::RenderUI() {
             ImGui::Columns(1);
             ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Connection")) {
-    const bool donglePresent = !availablePorts.empty() && availablePorts[0] != "No Dongle Found";
-    const float cardH = 150.0f * m_dpiScale;
-    const float cardGap = ImGui::GetStyle().ItemSpacing.x;
-    const float cardW = std::max(48.0f, (ImGui::GetContentRegionAvail().x - cardGap * 2.0f) / 3.0f);
-    const ImVec2 cards = ImGui::GetCursorScreenPos();
-    ImDrawList* pictureDraw = ImGui::GetWindowDrawList();
-    const ImVec2 dongleA = cards;
-    const ImVec2 dongleB(cards.x + cardW, cards.y + cardH);
-    pictureDraw->AddRectFilled(dongleA, dongleB, IM_COL32(244, 247, 248, 255), 12.0f * m_dpiScale);
-    pictureDraw->AddRect(dongleA, dongleB, donglePresent ? IM_COL32(31, 111, 139, 255) : IM_COL32(190, 198, 204, 255), 12.0f * m_dpiScale, 0, 2.0f);
-    DrawDonglePicture(pictureDraw, dongleA, dongleB, donglePresent);
+            if (ImGui::BeginTabItem("Checklist", nullptr, checklistFlags)) {
+                const bool donglePresent = !availablePorts.empty() && availablePorts[0] != "No Dongle Found";
+                const bool ledSolid = isConnected;
+                const bool ledBlink = boardSwitchReady && !ledSolid && std::fmod(glfwGetTime(), 1.0) < 0.45;
 
-    ImGui::SetCursorScreenPos(ImVec2(cards.x + cardW + cardGap, cards.y));
-    ImGui::PushID("boardSwitch");
-    if (ImGui::InvisibleButton("##switch", ImVec2(cardW, cardH))) boardSwitchReady = !boardSwitchReady;
-    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    ImGui::PopID();
-    const ImVec2 switchA(cards.x + cardW + cardGap, cards.y);
-    const ImVec2 switchB(switchA.x + cardW, switchA.y + cardH);
-    pictureDraw->AddRectFilled(switchA, switchB, IM_COL32(244, 247, 248, 255), 12.0f * m_dpiScale);
-    pictureDraw->AddRect(switchA, switchB, boardSwitchReady ? IM_COL32(31, 111, 139, 255) : IM_COL32(190, 198, 204, 255), 12.0f * m_dpiScale, 0, 2.0f);
-    DrawSwitchPicture(pictureDraw, switchA, switchB, boardSwitchReady);
+                ImGui::BeginChild("ChecklistSteps", ImVec2(0, 0));
+                ImGui::Spacing();
 
-    const bool ledSolid = isConnected;
-    const bool ledBlink = !ledSolid && std::fmod(glfwGetTime(), 1.0) < 0.45;
-    const ImVec2 ledA(cards.x + (cardW + cardGap) * 2.0f, cards.y);
-    const ImVec2 ledB(ledA.x + cardW, ledA.y + cardH);
-    pictureDraw->AddRectFilled(ledA, ledB, IM_COL32(244, 247, 248, 255), 12.0f * m_dpiScale);
-    pictureDraw->AddRect(ledA, ledB, ledSolid ? IM_COL32(70, 150, 255, 255) : IM_COL32(190, 198, 204, 255), 12.0f * m_dpiScale, 0, 2.0f);
-    DrawLedPicture(pictureDraw, ledA, ledB, ledSolid, ledBlink);
+                const float stepGap = ImGui::GetStyle().ItemSpacing.x;
+                const float stepColW = std::max(1.0f, (ImGui::GetContentRegionAvail().x - stepGap * 2.0f) / 3.0f);
 
-    ImGui::SetCursorScreenPos(ImVec2(cards.x, cards.y + cardH + 8.0f * m_dpiScale));
-    OpenMeaning("connect",
-        "The first picture is the dongle in the computer. The middle picture is the board switch: click it when the board is on. The blue light blinks when the board is ready and stays on when this program is connected. If finding the board fails, unplug the dongle and plug it in again.");
-    ImGui::Spacing();
+                BeginChecklistStep("dongle", 1, "Plug the dongle into your PC port.", m_dpiScale, GameFont, stepColW);
+                {
+                    const ImVec2 picture = ChecklistPictureSize(m_dpiScale);
+                    ImGui::Dummy(picture);
+                    const ImVec2 a = ImGui::GetItemRectMin();
+                    const ImVec2 b = ImGui::GetItemRectMax();
+                    ImDrawList* draw = ImGui::GetWindowDrawList();
+                    DrawChecklistCard(draw, a, b, donglePresent, m_dpiScale);
+                    DrawDonglePicture(draw, a, b, donglePresent);
+                    ImGui::Spacing();
+                    ImGui::TextUnformatted(donglePresent ? "Dongle found." : "No dongle found yet.");
+                }
+                EndChecklistStep(true);
 
-    if (isConnected) {
-        if (ImGui::Button("Disconnect", ImVec2(-1, 48.0f * m_dpiScale))) reqDisconnect = true;
-    }
-    else {
-        ImGui::BeginDisabled(isCheckingImpedance);
-        if (ImGui::Button("Find the board", ImVec2(-1, 48.0f * m_dpiScale))) reqConnect = true;
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && isCheckingImpedance) {
-            ImGui::SetTooltip("Stop checking impedance first");
-        }
-        ImGui::EndDisabled();
-    }
+                BeginChecklistStep("switch", 2, "Turn the board switch on.", m_dpiScale, GameFont, stepColW);
+                {
+                    const ImVec2 picture = ChecklistPictureSize(m_dpiScale);
+                    if (ImGui::InvisibleButton("##switch", picture)) boardSwitchReady = !boardSwitchReady;
+                    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    const ImVec2 a = ImGui::GetItemRectMin();
+                    const ImVec2 b = ImGui::GetItemRectMax();
+                    ImDrawList* draw = ImGui::GetWindowDrawList();
+                    DrawChecklistCard(draw, a, b, boardSwitchReady, m_dpiScale);
+                    DrawSwitchPicture(draw, a, b, boardSwitchReady);
+                    ImGui::Spacing();
+                    ImGui::TextWrapped("%s", boardSwitchReady
+                        ? "Switch is on."
+                        : "Click the picture when the switch is on.");
+                }
+                EndChecklistStep(true);
 
-    if (ImGui::CollapsingHeader("Port and address")) {
-    ImGui::Text("MAC");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
+                BeginChecklistStep("light", 3, "Wait until the blue light blinks.", m_dpiScale, GameFont, stepColW);
+                {
+                    const ImVec2 picture = ChecklistPictureSize(m_dpiScale);
+                    ImGui::Dummy(picture);
+                    const ImVec2 a = ImGui::GetItemRectMin();
+                    const ImVec2 b = ImGui::GetItemRectMax();
+                    ImDrawList* draw = ImGui::GetWindowDrawList();
+                    DrawChecklistCard(draw, a, b, ledSolid || boardSwitchReady, m_dpiScale);
+                    DrawLedPicture(draw, a, b, ledSolid, ledBlink);
+                    ImGui::Spacing();
+                    const char* lightStatus = "Turn the switch on. The blue light on the board should blink.";
+                    if (ledSolid) lightStatus = "Connected. The light stays on.";
+                    else if (boardSwitchReady) lightStatus = "The light blinks while the board is ready.";
+                    ImGui::TextWrapped("%s", lightStatus);
+                }
+                EndChecklistStep(false);
 
-    if (ImGui::IsItemHovered()) {
-        ImGui::BeginTooltip();
-        ImGui::Text("Enter the device MAC address");
-        ImGui::Spacing();
-        if (macHelpTextureID != 0) {
-            ImVec2 tooltipImageSize = ImVec2(250.0f * m_dpiScale, 241.0f * m_dpiScale);
-            ImGui::Image((void*)(intptr_t)macHelpTextureID, tooltipImageSize);
-        }
-        ImGui::EndTooltip();
-    }
+                BeginChecklistStep("mac", 4, "Type the MAC address printed on the board, then choose the dongle.", m_dpiScale, GameFont, 0.0f);
+                if (macHelpTextureID != 0) {
+                    const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+                    const float imageW = std::min(220.0f * m_dpiScale, std::max(120.0f * m_dpiScale, avail - 360.0f * m_dpiScale));
+                    ImGui::Image((void*)(intptr_t)macHelpTextureID, ImVec2(imageW, imageW * (241.0f / 250.0f)));
+                    ImGui::SameLine();
+                }
 
-    ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("MAC");
+                ImGui::SameLine();
 
-    float buttonWidth = 50.0f * m_dpiScale;
-    float spaceBetween = ImGui::GetStyle().ItemSpacing.x;
+                {
+                    const float buttonWidth = 50.0f * m_dpiScale;
+                    const float spaceBetween = ImGui::GetStyle().ItemSpacing.x;
+                    const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+                    const float buttonStartX = rightEdgeX - buttonWidth;
+                    const float currentX = ImGui::GetCursorPosX();
+                    const float availableForInputsAndColons = buttonStartX - spaceBetween - currentX;
+                    const float colonWidth = ImGui::CalcTextSize(":").x * m_dpiScale;
+                    const float totalColonsWidth = 5.0f * colonWidth;
+                    const float singleInputWidth = std::max(18.0f, (availableForInputsAndColons - totalColonsWidth) / 6.0f);
 
-    float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    float buttonStartX = rightEdgeX - buttonWidth;
+                    static int nextFocusTarget = -1;
+                    for (int i = 0; i < 6; ++i) {
+                        if (i > 0) {
+                            ImGui::SameLine(0, 1.0f);
+                            ImGui::Text(":");
+                            ImGui::SameLine(0, 1.0f);
+                        }
 
-    float currentX = ImGui::GetCursorPosX();
-    float availableForInputsAndColons = buttonStartX - spaceBetween - currentX;
+                        ImGui::SetNextItemWidth(singleInputWidth);
+                        ImGui::PushID(i);
 
-    float colonWidth = ImGui::CalcTextSize(":").x * m_dpiScale;
-    float totalColonsWidth = 5.0f * (colonWidth);
+                        if (nextFocusTarget == i) {
+                            ImGui::SetKeyboardFocusHere(0);
+                            nextFocusTarget = -1;
+                        }
 
-    float singleInputWidth = (availableForInputsAndColons - totalColonsWidth) / 6.0f;
+                        const bool edited = ImGui::InputText("##mac", macParts[i], 3, ImGuiInputTextFlags_CharsHexadecimal);
+                        if (edited && strlen(macParts[i]) == 2 && i < 5) nextFocusTarget = i + 1;
 
-    static int nextFocusTarget = -1;
-    for (int i = 0; i < 6; ++i) {
-        if (i > 0) {
-            ImGui::SameLine(0, 1.0f);
-            ImGui::Text(":");
-            ImGui::SameLine(0, 1.0f);
-        }
+                        if (ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGuiKey_Backspace, true) && i > 0) {
+                            if (strlen(macParts[i]) == 0 && !edited) nextFocusTarget = i - 1;
+                        }
 
-        ImGui::SetNextItemWidth(singleInputWidth);
-        ImGui::PushID(i);
+                        ImGui::PopID();
+                    }
 
-        if (nextFocusTarget == i) {
-            ImGui::SetKeyboardFocusHere(0);
-            nextFocusTarget = -1;
-        }
+                    ImGui::SameLine();
+                    ImGui::SetCursorPosX(buttonStartX);
+                    if (ImGui::Button("Clear", ImVec2(buttonWidth, 0))) {
+                        for (int i = 0; i < 6; ++i) macParts[i][0] = '\0';
+                        nextFocusTarget = 0;
+                    }
+                }
 
-        bool edited = ImGui::InputText("##mac", macParts[i], 3, ImGuiInputTextFlags_CharsHexadecimal);
+                ImGui::Spacing();
+                {
+                    const float buttonWidth = 50.0f * m_dpiScale;
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextUnformatted("Port");
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - buttonWidth - ImGui::GetStyle().ItemSpacing.x);
+                    ImGui::Combo("##Port_Combo", &selectedPortIdx, ProPortVectorGetter, &availablePorts, static_cast<int>(availablePorts.size()));
+                    ImGui::SameLine();
+                    if (ImGui::Button("Refresh##Refresh", ImVec2(buttonWidth, 0))) UpdateAvailablePorts();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rescan system serial channels");
+                }
+                ImGui::EndGroup();
 
-        if (edited && strlen(macParts[i]) == 2 && i < 5) {
-            nextFocusTarget = i + 1;
-        }
+                snprintf(macAddress, sizeof(macAddress), "%s:%s:%s:%s:%s:%s",
+                    macParts[0], macParts[1], macParts[2], macParts[3], macParts[4], macParts[5]);
+                EndChecklistStep(false);
 
-        if (ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGuiKey_Backspace, true) && i > 0) {
-            if (strlen(macParts[i]) == 0 && !edited) {
-                nextFocusTarget = i - 1;
-            }
-        }
+                BeginChecklistStep("impedance", 5, "Open Impedance Check. Adjust each electrode until every channel is under 150 k\xCE\xA9.", m_dpiScale, GameFont, 0.0f);
+                if (ImGui::Button("Open Impedance Check", ImVec2(220.0f * m_dpiScale, 40.0f * m_dpiScale))) {
+                    openImpedanceTab = true;
+                }
+                if (isCheckingImpedance) {
+                    const char* chanNames[5] = { "Channel 1", "Channel 2", "Channel 3", "Channel 4", "REF" };
+                    bool allUnder = true;
+                    ImGui::Spacing();
+                    for (int i = 0; i < 5; ++i) {
+                        if (i > 0) ImGui::SameLine();
+                        const bool under = currentImpedances[i] < 150.0f;
+                        if (!under) allUnder = false;
+                        ImGui::TextColored(under
+                            ? ImVec4(0.19f, 0.44f, 0.35f, 1.0f)
+                            : ImVec4(0.88f, 0.22f, 0.18f, 1.0f),
+                            "%s: %.1f k\xCE\xA9", chanNames[i], currentImpedances[i]);
+                    }
+                    ImGui::Spacing();
+                    if (allUnder) {
+                        ImGui::TextColored(ImVec4(0.19f, 0.44f, 0.35f, 1.0f), "Every channel is under 150 k\xCE\xA9.");
+                    }
+                    else {
+                        ImGui::TextWrapped("Keep adjusting until every channel is under 150 k\xCE\xA9.");
+                    }
+                }
+                EndChecklistStep(false);
 
-        ImGui::PopID();
-    }
+                BeginChecklistStep("connect", 6, "Connect to the board.", m_dpiScale, GameFont, 0.0f);
+                if (isConnected) {
+                    if (ImGui::Button("Disconnect", ImVec2(-1, 48.0f * m_dpiScale))) reqDisconnect = true;
+                }
+                else {
+                    ImGui::BeginDisabled(isCheckingImpedance);
+                    if (ImGui::Button("Find the board", ImVec2(-1, 48.0f * m_dpiScale))) reqConnect = true;
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && isCheckingImpedance) {
+                        ImGui::SetTooltip("Stop checking impedance first");
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::Spacing();
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.40f, 0.44f, 1.0f));
+                    ImGui::TextWrapped("If finding the board fails, unplug the dongle and plug it in again.");
+                    ImGui::PopStyleColor();
+                }
+                EndChecklistStep(false);
 
-    ImGui::SameLine();
-    ImGui::SetCursorPosX(buttonStartX);
-    if (ImGui::Button("Clear", ImVec2(buttonWidth, 0))) {
-        for (int i = 0; i < 6; ++i) {
-            macParts[i][0] = '\0';
-        }
-        nextFocusTarget = 0;
-    }
-
-    snprintf(macAddress, sizeof(macAddress), "%s:%s:%s:%s:%s:%s",
-        macParts[0], macParts[1], macParts[2], macParts[3], macParts[4], macParts[5]);
-
-    ImGui::Text("Port");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - buttonWidth - ImGui::GetStyle().ItemSpacing.x);
-    ImGui::Combo("##Port_Combo", &selectedPortIdx, ProPortVectorGetter, &availablePorts, static_cast<int>(availablePorts.size()));
-
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh##Refresh", ImVec2(buttonWidth, 0))) {
-        UpdateAvailablePorts();
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rescan system serial channels");
-    }
+                ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -4457,9 +4488,6 @@ void UIManager::RenderUI() {
                 ImGui::Checkbox(waves[i], &selectedWaves[i]);
                 if (i < 4) ImGui::SameLine();
             }
-            ImGui::SameLine();
-            OpenMeaning("bands",
-                "Deep sleep, drowsy, calm, busy, and fast are the five usual brain-wave bands. Close your eyes and watch the calm bar grow.");
             ImGui::Spacing();
 
             if (ImPlot::BeginPlot("##Current Band Powers", ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.5f))) {
