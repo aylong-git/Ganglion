@@ -41,7 +41,23 @@ if %errorlevel% neq 0 (
 :: 3. Build the project
 echo [3/3] Compiling the project...
 cmake --build build --config Release
+if errorlevel 1 (
+    echo [ERROR] Build failed.
+    pause
+    exit /b 1
+)
+
+:: Ninja writes build\Ganglion_SSVEP.exe; Visual Studio writes build\Release\Ganglion_SSVEP.exe.
+set "APP_EXE=%~dp0build\Ganglion_SSVEP.exe"
+if not exist "%APP_EXE%" set "APP_EXE=%~dp0build\Release\Ganglion_SSVEP.exe"
+if not exist "%APP_EXE%" (
+    echo [ERROR] Built executable was not found.
+    pause
+    exit /b 1
+)
 
 echo =========================================
-echo Build complete! Your executable is inside the 'build' or 'build/Release' folder.
+echo Build complete. Opening %APP_EXE%
+echo =========================================
+start "" "%APP_EXE%"
 pause

@@ -31,6 +31,9 @@ public:
     char macParts[6][3] = { "", "", "", "", "", "" };
     char macAddress[18] = "";
     unsigned int macHelpTextureID = 0;
+    unsigned int impedanceGuideTex = 0;
+    int impedanceGuideW = 0;
+    int impedanceGuideH = 0;
 
     unsigned int qrCodeTextureID = 0;
     unsigned int qrCodeInvTextureID = 0;
@@ -52,7 +55,6 @@ public:
     bool reqDisconnect = false;
 
     // Control Settings
-    bool eegChannels[4] = { true, true, true, true };
     float statusRefreshTime = 0.1f;
 
     // Band Power Arrays

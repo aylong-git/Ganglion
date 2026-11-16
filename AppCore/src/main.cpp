@@ -135,11 +135,7 @@ int main() {
             // 2. Process Data if Connected
             if (ganglionBoard.IsConnected()) {
 
-                // Convert boolean UI checkboxes into a list of active channels (1, 2, 3, 4)
-                std::vector<int> activeChannels;
-                for (int i = 0; i < 4; i++) {
-                    if (uiManager.eegChannels[i]) activeChannels.push_back(i + 1);
-                }
+                const std::vector<int> activeChannels = { 1, 2, 3, 4 };
                 ganglionBoard.SetMonitorRefreshHz(uiManager.monitorRefreshHz.load());
                 
                 // 1. Sync the Window Duration from the UI Slider
