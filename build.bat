@@ -60,4 +60,4 @@ echo =========================================
 echo Build complete. Opening %APP_EXE%
 echo =========================================
 start "" "%APP_EXE%"
-pause
+exit

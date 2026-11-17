@@ -331,6 +331,8 @@ bool UIManager::Initialize() {
     const std::string assetsDir = GetAssetPath("");
     headObject.InitModel(GetAssetPath("SSVEP_headmodel.obj"), assetsDir);
     macHelpTextureID = LoadComponentTexture(GetAssetPath("mac_help.jpeg").c_str());
+    donglePhotoTex = LoadComponentTexture(GetAssetPath("dongle.jpg").c_str(), &donglePhotoW, &donglePhotoH);
+    bleSwitchTex = LoadComponentTexture(GetAssetPath("BLE_switch.jpg").c_str(), &bleSwitchW, &bleSwitchH);
     impedanceGuideTex = LoadComponentTexture(
         GetAssetPath("impedance_guide.png").c_str(), &impedanceGuideW, &impedanceGuideH);
     qrCodeTextureID = LoadComponentTexture(GetAssetPath("qr_code.png").c_str());
@@ -2927,53 +2929,20 @@ void DrawSSVEPScoreGraph(const SSVEPDetectSnapshot& snap) {
     }
 }
 
-void DrawDonglePicture(ImDrawList* draw, ImVec2 a, ImVec2 b, bool present) {
-    const ImU32 ink = present ? IM_COL32(31, 111, 139, 255) : IM_COL32(176, 186, 192, 255);
-    const float w = b.x - a.x;
-    const float h = b.y - a.y;
-    const ImVec2 bodyMin(a.x + w * 0.30f, a.y + h * 0.22f);
-    const ImVec2 bodyMax(a.x + w * 0.70f, a.y + h * 0.78f);
-    draw->AddRectFilled(bodyMin, bodyMax, ink, h * 0.06f);
-    draw->AddRectFilled(
-        ImVec2(a.x + w * 0.38f, a.y + h * 0.10f),
-        ImVec2(a.x + w * 0.62f, a.y + h * 0.24f),
-        ink, 2.0f);
-    const ImU32 mark = present ? IM_COL32(255, 255, 255, 230) : IM_COL32(255, 255, 255, 140);
-    draw->AddRectFilled(
-        ImVec2(bodyMin.x + w * 0.08f, bodyMin.y + h * 0.16f),
-        ImVec2(bodyMax.x - w * 0.08f, bodyMin.y + h * 0.22f),
-        mark);
-}
-
-void DrawSwitchPicture(ImDrawList* draw, ImVec2 a, ImVec2 b, bool on) {
-    const float w = b.x - a.x;
-    const float h = b.y - a.y;
-    const ImU32 board = IM_COL32(27, 58, 75, 255);
-    const ImVec2 bodyMin(a.x + w * 0.16f, a.y + h * 0.28f);
-    const ImVec2 bodyMax(a.x + w * 0.84f, a.y + h * 0.78f);
-    draw->AddRectFilled(bodyMin, bodyMax, board, h * 0.04f);
-    const ImVec2 trackMin(a.x + w * 0.38f, a.y + h * 0.40f);
-    const ImVec2 trackMax(a.x + w * 0.62f, a.y + h * 0.66f);
-    draw->AddRectFilled(trackMin, trackMax, IM_COL32(255, 255, 255, 230), 6.0f);
-    const float knobY = on ? trackMin.y + 2.0f : trackMax.y - (trackMax.x - trackMin.x) * 0.45f - 2.0f;
-    const float knob = (trackMax.x - trackMin.x) * 0.42f;
-    draw->AddRectFilled(
-        ImVec2(trackMin.x + 3.0f, knobY),
-        ImVec2(trackMax.x - 3.0f, knobY + knob),
-        on ? IM_COL32(31, 111, 139, 255) : IM_COL32(160, 170, 176, 255),
-        4.0f);
-}
-
-void DrawLedPicture(ImDrawList* draw, ImVec2 a, ImVec2 b, bool solid, bool lit) {
-    const float w = b.x - a.x;
-    const float h = b.y - a.y;
-    draw->AddRectFilled(
-        ImVec2(a.x + w * 0.22f, a.y + h * 0.30f),
-        ImVec2(a.x + w * 0.78f, a.y + h * 0.72f),
-        IM_COL32(27, 58, 75, 255),
-        h * 0.04f);
-    const ImU32 led = (solid || lit) ? IM_COL32(70, 150, 255, 255) : IM_COL32(30, 48, 70, 255);
-    draw->AddCircleFilled(ImVec2(a.x + w * 0.50f, a.y + h * 0.48f), h * 0.10f, led);
+void DrawChecklistPhoto(ImDrawList* draw, ImVec2 a, ImVec2 b, unsigned tex, int srcW, int srcH, float dpi) {
+    if (tex == 0 || srcW <= 0 || srcH <= 0) return;
+    const float pad = 8.0f * dpi;
+    const float availW = std::max(1.0f, b.x - a.x - pad * 2.0f);
+    const float availH = std::max(1.0f, b.y - a.y - pad * 2.0f);
+    const float aspect = static_cast<float>(srcW) / static_cast<float>(srcH);
+    float w = availW;
+    float h = w / aspect;
+    if (h > availH) {
+        h = availH;
+        w = h * aspect;
+    }
+    const ImVec2 origin(a.x + (b.x - a.x - w) * 0.5f, a.y + (b.y - a.y - h) * 0.5f);
+    draw->AddImage((ImTextureID)(intptr_t)tex, origin, ImVec2(origin.x + w, origin.y + h));
 }
 
 void DrawWrappedMarkedText(const char* lead, const char* marked, ImFont* boldFont) {
@@ -3051,9 +3020,13 @@ void EndChecklistStep(bool besideNext) {
     else ImGui::Spacing();
 }
 
-ImVec2 ChecklistPictureSize(float dpi) {
+ImVec2 ChecklistPictureSize(float dpi, int srcW, int srcH) {
     const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-    const float h = std::max(88.0f * dpi, std::min(avail * 0.72f, 140.0f * dpi));
+    float h = 180.0f * dpi;
+    if (srcW > 0 && srcH > 0) {
+        h = avail * (static_cast<float>(srcH) / static_cast<float>(srcW));
+        h = std::clamp(h, 140.0f * dpi, 320.0f * dpi);
+    }
     return ImVec2(avail, h);
 }
 
@@ -3865,65 +3838,37 @@ void UIManager::RenderUI() {
             if (selectChecklist) selectChecklist = false;
             if (openImpedanceTab) openImpedanceTab = false;
             if (ImGui::BeginTabItem("Checklist", nullptr, checklistFlags)) {
-                const bool donglePresent = !availablePorts.empty() && availablePorts[0] != "No Dongle Found";
-                const bool ledSolid = isConnected;
-                const bool ledBlink = boardSwitchReady && !ledSolid && std::fmod(glfwGetTime(), 1.0) < 0.45;
-
                 ImGui::BeginChild("ChecklistSteps", ImVec2(0, 0));
                 ImGui::Spacing();
 
                 const float stepGap = ImGui::GetStyle().ItemSpacing.x;
-                const float stepColW = std::max(1.0f, (ImGui::GetContentRegionAvail().x - stepGap * 2.0f) / 3.0f);
+                const float stepColW = std::max(1.0f, (ImGui::GetContentRegionAvail().x - stepGap) / 2.0f);
 
                 BeginChecklistStep("dongle", 1, "Plug the dongle into your PC port.", m_dpiScale, GameFont, stepColW);
                 {
-                    const ImVec2 picture = ChecklistPictureSize(m_dpiScale);
+                    const ImVec2 picture = ChecklistPictureSize(m_dpiScale, donglePhotoW, donglePhotoH);
                     ImGui::Dummy(picture);
                     const ImVec2 a = ImGui::GetItemRectMin();
                     const ImVec2 b = ImGui::GetItemRectMax();
                     ImDrawList* draw = ImGui::GetWindowDrawList();
-                    DrawChecklistCard(draw, a, b, donglePresent, m_dpiScale);
-                    DrawDonglePicture(draw, a, b, donglePresent);
-                    ImGui::Spacing();
-                    ImGui::TextUnformatted(donglePresent ? "Dongle found." : "No dongle found yet.");
+                    DrawChecklistCard(draw, a, b, false, m_dpiScale);
+                    DrawChecklistPhoto(draw, a, b, donglePhotoTex, donglePhotoW, donglePhotoH, m_dpiScale);
                 }
                 EndChecklistStep(true);
 
                 BeginChecklistStep("switch", 2, "Turn the board switch on.", m_dpiScale, GameFont, stepColW);
                 {
-                    const ImVec2 picture = ChecklistPictureSize(m_dpiScale);
-                    if (ImGui::InvisibleButton("##switch", picture)) boardSwitchReady = !boardSwitchReady;
-                    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-                    const ImVec2 a = ImGui::GetItemRectMin();
-                    const ImVec2 b = ImGui::GetItemRectMax();
-                    ImDrawList* draw = ImGui::GetWindowDrawList();
-                    DrawChecklistCard(draw, a, b, boardSwitchReady, m_dpiScale);
-                    DrawSwitchPicture(draw, a, b, boardSwitchReady);
-                    ImGui::Spacing();
-                    ImGui::TextWrapped("%s", boardSwitchReady
-                        ? "Switch is on."
-                        : "Click the picture when the switch is on.");
-                }
-                EndChecklistStep(true);
-
-                BeginChecklistStep("light", 3, "Wait until the blue light blinks.", m_dpiScale, GameFont, stepColW);
-                {
-                    const ImVec2 picture = ChecklistPictureSize(m_dpiScale);
+                    const ImVec2 picture = ChecklistPictureSize(m_dpiScale, bleSwitchW, bleSwitchH);
                     ImGui::Dummy(picture);
                     const ImVec2 a = ImGui::GetItemRectMin();
                     const ImVec2 b = ImGui::GetItemRectMax();
                     ImDrawList* draw = ImGui::GetWindowDrawList();
-                    DrawChecklistCard(draw, a, b, ledSolid || boardSwitchReady, m_dpiScale);
-                    DrawLedPicture(draw, a, b, ledSolid, ledBlink);
-                    ImGui::Spacing();
-                    const char* lightStatus = "Turn the switch on. The blue light on the board should blink.";
-                    if (ledSolid) lightStatus = "Connected. The light stays on.";
-                    else if (boardSwitchReady) lightStatus = "The light blinks while the board is ready.";
-                    ImGui::TextWrapped("%s", lightStatus);
+                    DrawChecklistCard(draw, a, b, false, m_dpiScale);
+                    DrawChecklistPhoto(draw, a, b, bleSwitchTex, bleSwitchW, bleSwitchH, m_dpiScale);
                 }
                 EndChecklistStep(false);
 
-                BeginChecklistStep("mac", 4, "Type the MAC address printed on the board, then choose the dongle.", m_dpiScale, GameFont, 0.0f);
+                BeginChecklistStep("mac", 3, "Type the MAC address printed on the board, then choose the dongle.", m_dpiScale, GameFont, 0.0f);
                 if (macHelpTextureID != 0) {
                     const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
                     const float imageW = std::min(220.0f * m_dpiScale, std::max(120.0f * m_dpiScale, avail - 360.0f * m_dpiScale));
@@ -3999,7 +3944,7 @@ void UIManager::RenderUI() {
                     macParts[0], macParts[1], macParts[2], macParts[3], macParts[4], macParts[5]);
                 EndChecklistStep(false);
 
-                BeginChecklistStep("impedance", 5, nullptr, m_dpiScale, GameFont, 0.0f);
+                BeginChecklistStep("impedance", 4, nullptr, m_dpiScale, GameFont, 0.0f);
                 DrawWrappedMarkedText(
                     "Open Impedance Check. Adjust each electrode until ",
                     "Impedance <= 150 k\xCE\xA9",
@@ -4038,7 +3983,7 @@ void UIManager::RenderUI() {
                 }
                 EndChecklistStep(false);
 
-                BeginChecklistStep("connect", 6, "Connect to the board.", m_dpiScale, GameFont, 0.0f);
+                BeginChecklistStep("connect", 5, "Connect to the board.", m_dpiScale, GameFont, 0.0f);
                 if (isConnected) {
                     if (ImGui::Button("Disconnect", ImVec2(-1, 48.0f * m_dpiScale))) reqDisconnect = true;
                 }

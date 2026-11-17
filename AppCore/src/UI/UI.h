@@ -31,6 +31,12 @@ public:
     char macParts[6][3] = { "", "", "", "", "", "" };
     char macAddress[18] = "";
     unsigned int macHelpTextureID = 0;
+    unsigned int donglePhotoTex = 0;
+    int donglePhotoW = 0;
+    int donglePhotoH = 0;
+    unsigned int bleSwitchTex = 0;
+    int bleSwitchW = 0;
+    int bleSwitchH = 0;
     unsigned int impedanceGuideTex = 0;
     int impedanceGuideW = 0;
     int impedanceGuideH = 0;
